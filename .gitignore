@@ -19,6 +19,9 @@ batches/*/export/
 batches/*/sessions/
 results/
 
+#Reference files (these should be copied over but not git)
+refs/
+
 # Test output
 batches/test_batch/
 

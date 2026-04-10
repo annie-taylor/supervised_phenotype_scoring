@@ -522,7 +522,7 @@ def main() -> None:
 
     # ── Load bird registry ────────────────────────────────────────────────────
     print("\nLoading bird registry...")
-    registry = load_bird_registry(cfg["file_management_dir"], nf, gf)
+    registry = load_bird_registry(cfg["ref_dir"], nf, gf)
     role_counts = {r: sum(1 for v in registry.values() if v["role"] == r)
                    for r in ["nest_father", "genetic_father", "xf", "hr_nest", "hr_genetic"]}
     print(f"  {len(registry)} birds: " +
