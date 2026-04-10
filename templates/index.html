@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Song Ranking — Start</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a1a; color: #e0e0e0;
+      font-family: monospace; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .card {
+      background: #111; border: 1px solid #333; border-radius: 12px;
+      padding: 40px 48px; max-width: 480px; width: 100%;
+    }
+    h1   { color: #fff; font-size: 1.4em; margin-bottom: 6px; }
+    .sub { color: #888; font-size: 0.85em; margin-bottom: 32px; }
+    label { display: block; color: #aaa; font-size: 0.85em; margin-bottom: 6px; }
+    input, select {
+      width: 100%; padding: 10px 14px;
+      background: #1a1a1a; border: 1px solid #444; border-radius: 6px;
+      color: #e0e0e0; font-family: monospace; font-size: 0.95em;
+      margin-bottom: 20px;
+    }
+    input:focus, select:focus { outline: none; border-color: #4a9eff; }
+    .trait-desc {
+      background: #0d1f33; border: 1px solid #1e3a5f; border-radius: 6px;
+      padding: 10px 14px; margin-bottom: 20px;
+      font-size: 0.8em; color: #7ab5ff; display: none;
+    }
+    button {
+      width: 100%; padding: 12px;
+      background: #4a9eff; border: none; border-radius: 6px;
+      color: #fff; font-family: monospace; font-size: 1em;
+      cursor: pointer; transition: background 0.15s;
+    }
+    button:hover { background: #2a7eff; }
+    .instructions {
+      margin-top: 24px; padding-top: 20px;
+      border-top: 1px solid #2a2a2a;
+      font-size: 0.78em; color: #666; line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Song Ranking</h1>
+    <div class="sub">Pairing: {{ pairing }}</div>
+
+    <form method="POST" action="/start">
+      <label for="scorer">Your name or initials</label>
+      <input type="text" id="scorer" name="scorer"
+             placeholder="e.g. Annie" autocomplete="off" required>
+
+      <label for="trait">Trait to score</label>
+      <select id="trait" name="trait" onchange="updateDesc()">
+        {% for t in traits %}
+        <option value="{{ t }}">{{ t.replace('_', ' ').title() }}</option>
+        {% endfor %}
+      </select>
+
+      <div id="desc-stereotypy" class="trait-desc">
+        <strong>Stereotypy</strong> — rank from <em>most stereotyped</em>
+        (highly consistent syllable sequence, few variations) to
+        <em>most variable</em> (many different syllable types, irregular order).
+      </div>
+      <div id="desc-repeat_propensity" class="trait-desc">
+        <strong>Repeat Propensity</strong> — rank from <em>most repetitive</em>
+        (same syllable repeated many times in a row) to
+        <em>least repetitive</em> (each syllable appears only once or twice).
+      </div>
+
+      <button type="submit">Start Ranking →</button>
+    </form>
+
+    <div class="instructions">
+      <strong>How it works:</strong><br>
+      You will see {{ 7 }} spectrograms per round. Click a spectrogram to play
+      its audio. Drag the cards into order — leftmost = most of the trait,
+      rightmost = least. Submit when ready. You can stop at any time; your
+      progress is saved after each round.
+    </div>
+  </div>
+
+  <script>
+    function updateDesc() {
+      document.querySelectorAll('.trait-desc').forEach(function(d) {
+        d.style.display = 'none';
+      });
+      var trait = document.getElementById('trait').value;
+      var el = document.getElementById('desc-' + trait);
+      if (el) el.style.display = 'block';
+    }
+    updateDesc();
+  </script>
+</body>
+</html>

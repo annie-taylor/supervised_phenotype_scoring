@@ -1,0 +1,27 @@
+supervised_phenotype_scoring
+============================
+
+A local web application for **anonymised, supervised scoring of birdsong phenotype traits**
+(stereotypy, repeat propensity, …) by human raters.
+
+Songs are extracted from audio recordings, stored in an HDF5 batch, served via a
+drag-and-drop ranking interface, and aggregated into per-bird Elo scores with
+inter-rater reliability statistics.
+
+.. toctree::
+   :maxdepth: 2
+   :caption: API Reference
+
+   api/family_spec_generation
+   api/prepare_batch
+   api/export_batch
+   api/ranking_app
+   api/analyze_rankings
+   api/upload_batch
+   api/make_test_batch
+
+Indices
+-------
+
+* :ref:`genindex`
+* :ref:`modindex`

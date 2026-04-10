@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Rank — {{ trait.replace('_',' ').title() }}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a1a; color: #e0e0e0;
+      font-family: monospace; padding: 20px 24px;
+      min-height: 100vh;
+    }
+    header {
+      display: flex; justify-content: space-between; align-items: baseline;
+      border-bottom: 1px solid #333; padding-bottom: 12px; margin-bottom: 18px;
+    }
+    header h1 { font-size: 1.1em; color: #fff; }
+    .meta     { font-size: 0.78em; color: #666; }
+    .instructions {
+      font-size: 0.82em; color: #888; margin-bottom: 16px;
+      padding: 10px 14px; background: #111; border-radius: 6px;
+      border-left: 3px solid #4a9eff;
+    }
+    .instructions strong { color: #4a9eff; }
+
+    /* ── Rank axis labels ── */
+    .axis-labels {
+      display: flex; justify-content: space-between;
+      font-size: 0.75em; color: #666; padding: 0 4px; margin-bottom: 6px;
+    }
+
+    /* ── Song cards ── */
+    #song-list {
+      display: flex; gap: 10px; overflow-x: auto;
+      padding: 8px 0 16px; cursor: grab;
+      scrollbar-color: #333 #111;
+    }
+    #song-list:active { cursor: grabbing; }
+
+    .song-card {
+      background: #111; border: 1px solid #333; border-radius: 8px;
+      padding: 10px; flex: 0 0 auto; width: 190px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      user-select: none;
+    }
+    .song-card:hover  { border-color: #555; }
+    .sortable-chosen  { border-color: #4a9eff !important;
+                        box-shadow: 0 0 12px #4a9eff44; }
+    .sortable-ghost   { opacity: 0.35; }
+    .sortable-drag    { cursor: grabbing; }
+
+    .rank-badge {
+      text-align: center; font-size: 1.6em; font-weight: bold;
+      color: #4a9eff; margin-bottom: 6px; line-height: 1;
+    }
+    .spec-img {
+      width: 100%; height: 110px; object-fit: fill;
+      border-radius: 4px; display: block; background: #0a0a0a;
+    }
+    .audio-wrap { margin-top: 8px; }
+    audio {
+      width: 100%; height: 28px;
+      filter: invert(0.85) hue-rotate(180deg);
+    }
+    .uid-label {
+      font-size: 0.6em; color: #444; margin-top: 6px;
+      text-align: center; letter-spacing: 0.02em;
+    }
+
+    /* ── Controls ── */
+    .controls {
+      margin-top: 18px; display: flex;
+      align-items: center; gap: 16px;
+    }
+    .btn-submit {
+      padding: 11px 32px; background: #4a9eff; border: none;
+      border-radius: 6px; color: #fff; font-family: monospace;
+      font-size: 1em; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-submit:hover { background: #2a7eff; }
+    .btn-skip {
+      font-size: 0.82em; color: #555; text-decoration: none;
+      padding: 6px 12px; border: 1px solid #333; border-radius: 6px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .btn-skip:hover { color: #aaa; border-color: #555; }
+
+    /* ── Progress bar ── */
+    .progress-wrap {
+      margin-top: 20px; font-size: 0.75em; color: #555;
+    }
+    .progress-bar {
+      height: 3px; background: #222; border-radius: 2px; margin-top: 5px;
+    }
+    .progress-fill {
+      height: 100%; background: #4a9eff; border-radius: 2px;
+      transition: width 0.3s;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>
+      Round {{ round_num }} —
+      <span style="color:#4a9eff">{{ trait.replace('_',' ').title() }}</span>
+    </h1>
+    <span class="meta">{{ scorer }} &nbsp;·&nbsp; {{ pairing }}</span>
+  </header>
+
+  <div class="instructions">
+    Drag cards so that <strong>most {{ trait.replace('_',' ') }}</strong>
+    is on the <strong>left (rank 1)</strong> and
+    <strong>least</strong> is on the <strong>right</strong>.
+    Click a spectrogram to play its audio.
+  </div>
+
+  <div class="axis-labels">
+    <span>← most {{ trait.replace('_',' ') }}</span>
+    <span>least {{ trait.replace('_',' ') }} →</span>
+  </div>
+
+  <div id="song-list">
+    {% for song in songs %}
+    <div class="song-card" data-uid="{{ song.uid }}">
+      <div class="rank-badge rank-num">{{ loop.index }}</div>
+      <img src="/spec/{{ song.uid }}" class="spec-img"
+           title="{{ song.uid_short }}"
+           onerror="this.style.background='#222'; this.alt='missing'">
+      <div class="audio-wrap">
+        <audio preload="none">
+          <source src="/audio/{{ song.uid }}" type="audio/wav">
+        </audio>
+      </div>
+      <div class="uid-label">{{ song.uid_short }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="controls">
+    <button class="btn-submit" onclick="submitRanking()">
+      Submit Ranking →
+    </button>
+    <a class="btn-skip" href="/skip">Skip this batch</a>
+  </div>
+
+  <div class="progress-wrap">
+    {{ completed }} / {{ total }} songs ranked this session
+    <div class="progress-bar">
+      <div class="progress-fill"
+           style="width: {{ (completed / total * 100) | round(1) if total else 0 }}%">
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/Sortable.min.js"></script>
+  <script>
+    var _startTime = Date.now();
+
+    // ── Sortable ──────────────────────────────────────────────────────────
+    var sortable = Sortable.create(document.getElementById('song-list'), {
+      animation:   150,
+      ghostClass:  'sortable-ghost',
+      chosenClass: 'sortable-chosen',
+      dragClass:   'sortable-drag',
+      onEnd:       updateRankNumbers,
+    });
+
+    function updateRankNumbers() {
+      document.querySelectorAll('#song-list .song-card').forEach(function(card, i) {
+        card.querySelector('.rank-num').textContent = i + 1;
+      });
+    }
+
+    // ── Audio: click spectrogram to toggle playback ───────────────────────
+    document.querySelectorAll('.spec-img').forEach(function(img) {
+      img.style.cursor = 'pointer';
+      img.addEventListener('click', function() {
+        var audio = img.closest('.song-card').querySelector('audio');
+        if (audio.paused) {
+          // Pause all others first
+          document.querySelectorAll('audio').forEach(function(a) {
+            if (a !== audio) { a.pause(); a.currentTime = 0; }
+          });
+          audio.play();
+        } else {
+          audio.pause();
+          audio.currentTime = 0;
+        }
+      });
+    });
+
+    // ── Submit ────────────────────────────────────────────────────────────
+    function submitRanking() {
+      var cards   = document.querySelectorAll('#song-list .song-card');
+      var ranking = Array.from(cards).map(function(c) { return c.dataset.uid; });
+      var elapsed = (Date.now() - _startTime) / 1000;
+
+      // Disable button to prevent double-submit
+      document.querySelector('.btn-submit').disabled = true;
+      document.querySelector('.btn-submit').textContent = 'Saving…';
+
+      fetch('/submit', {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({ranking: ranking, elapsed_s: elapsed}),
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.done) {
+          window.location.href = '/done';
+        } else {
+          window.location.href = '/rank';
+        }
+      })
+      .catch(function(err) {
+        alert('Submit failed: ' + err);
+        document.querySelector('.btn-submit').disabled = false;
+        document.querySelector('.btn-submit').textContent = 'Submit Ranking →';
+      });
+    }
+  </script>
+</body>
+</html>

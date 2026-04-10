@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.venv/
+env/
+*.conda
+
+# Batch data (large files — track config, not data)
+batches/*/batch.h5
+batches/*/export/
+batches/*/sessions/
+results/
+
+# Test output
+batches/test_batch/
+
+# Docs build
+docs/_build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp

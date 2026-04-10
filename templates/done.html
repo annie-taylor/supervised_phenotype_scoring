@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Session Complete</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a1a; color: #e0e0e0; font-family: monospace;
+      min-height: 100vh; display: flex;
+      align-items: center; justify-content: center;
+    }
+    .card {
+      background: #111; border: 1px solid #333; border-radius: 12px;
+      padding: 40px 48px; max-width: 480px; width: 100%; text-align: center;
+    }
+    .check  { font-size: 3em; margin-bottom: 16px; }
+    h1      { color: #fff; font-size: 1.3em; margin-bottom: 8px; }
+    .sub    { color: #888; font-size: 0.85em; margin-bottom: 28px; }
+    .stats  {
+      background: #1a1a1a; border-radius: 8px; padding: 16px;
+      margin-bottom: 28px; font-size: 0.88em;
+    }
+    .stats td { padding: 4px 12px; }
+    .stats td:first-child { color: #666; text-align: right; }
+    .stats td:last-child  { color: #e0e0e0; text-align: left; }
+    a {
+      display: inline-block; padding: 11px 28px;
+      background: #4a9eff; border-radius: 6px; color: #fff;
+      text-decoration: none; font-size: 0.95em;
+      transition: background 0.15s;
+    }
+    a:hover { background: #2a7eff; }
+    .note { font-size: 0.75em; color: #555; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="check">✓</div>
+    <h1>Session Complete</h1>
+    <div class="sub">{{ pairing }}</div>
+
+    <table class="stats" style="margin: 0 auto;">
+      <tr>
+        <td>Scorer</td>
+        <td>{{ scorer }}</td>
+      </tr>
+      <tr>
+        <td>Trait</td>
+        <td>{{ trait.replace('_', ' ').title() }}</td>
+      </tr>
+      <tr>
+        <td>Rounds</td>
+        <td>{{ n_rounds }}</td>
+      </tr>
+      <tr>
+        <td>Songs ranked</td>
+        <td>{{ n_songs }}</td>
+      </tr>
+    </table>
+
+    <a href="/">Score another session</a>
+
+    <div class="note">
+      Your rankings have been saved to the sessions folder.<br>
+      Thank you for scoring!
+    </div>
+  </div>
+</body>
+</html>

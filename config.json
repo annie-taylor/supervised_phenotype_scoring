@@ -1,0 +1,32 @@
+{
+  "project_dir":            "C:/Users/Eric/Documents/annie/xfoster_bird_selection",
+  "file_management_dir":    "C:/Users/Eric/Documents/annie/xfoster_bird_selection/file_management",
+  "audio_candidates_cache": "C:/Users/Eric/Documents/annie/xfoster_bird_selection/file_management/audio_candidates_cache.json",
+  "output_dir":             "E:/scoring/batches",
+
+  "traits": ["stereotypy", "repeat_propensity"],
+  "batch_size": 7,
+
+  "snippets_per_bird":  6,
+  "snippet_duration_s": 8.0,
+  "min_gap_s":          5.0,
+  "edge_s":             1.0,
+  "seed":               42,
+  "target_sr":          32000,
+
+  "spectrogram": {
+    "nfft":     1024,
+    "hop":      256,
+    "min_freq": 400,
+    "max_freq": 10000,
+    "p_low":    2,
+    "p_high":   98
+  },
+
+  "n_workers": 4,
+
+  "mode":           "local",
+  "image_base_url": null,
+  "audio_base_url": null,
+  "results_url":    null
+}

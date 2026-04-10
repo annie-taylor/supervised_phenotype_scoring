@@ -1,0 +1,494 @@
+#!/usr/bin/env python3
+"""
+analyze_rankings.py — Aggregate session JSON rankings into Elo scores and IRR stats.
+
+Reads all session files from <batch_dir>/sessions/, converts each round's
+ordered ranking into pairwise comparisons, updates Elo ratings, then produces:
+
+  results/<batch_id>_<trait>_elo.csv     — per-snippet Elo scores with metadata
+  results/<batch_id>_<trait>_birds.csv   — per-bird averages by role
+  results/<batch_id>_<trait>_irr.csv     — pairwise Kendall τ between scorers
+  results/<batch_id>_<trait>_summary.txt — human-readable digest
+
+Elo parameters follow standard chess convention (K=32, base=400) but applied
+to ranking tournaments rather than individual matches.
+
+Usage
+-----
+    python analyze_rankings.py E:/scoring/batches/pk24bu3_wh88br85_20260410
+    python analyze_rankings.py <batch_dir> --trait stereotypy --k 32 --min-rounds 2
+    python analyze_rankings.py <batch_dir> --trait all          # run both traits
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from collections import defaultdict
+from itertools import combinations
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import tables
+
+# ── Constants ─────────────────────────────────────────────────────────────────────
+
+ELO_START   = 1500.0
+ELO_BASE    = 400.0
+ELO_K       = 32.0
+
+# Rounds shorter than this are flagged as suspiciously fast
+MIN_ROUND_SECONDS = 5.0
+
+ROLE_ORDER  = ["nest_father", "genetic_father", "xf", "hr_nest", "hr_genetic"]
+
+ROLE_LABELS = {
+    "nest_father":    "Nest father",
+    "genetic_father": "Genetic father",
+    "xf":             "Cross-foster offspring",
+    "hr_nest":        "Hand-reared (nest-type)",
+    "hr_genetic":     "Hand-reared (genetic-type)",
+}
+
+
+# ── Elo helpers ───────────────────────────────────────────────────────────────────
+
+def expected_score(rating_a: float, rating_b: float) -> float:
+    """Expected win probability for A against B."""
+    return 1.0 / (1.0 + math.pow(10.0, (rating_b - rating_a) / ELO_BASE))
+
+
+def update_elo(ratings: dict[str, float], winner: str, loser: str,
+               k: float = ELO_K) -> None:
+    """Update ratings in-place for one pairwise comparison (winner beats loser)."""
+    ra = ratings[winner]
+    rb = ratings[loser]
+    ea = expected_score(ra, rb)
+    ratings[winner] += k * (1.0 - ea)
+    ratings[loser]  += k * (0.0 - (1.0 - ea))
+
+
+def ranking_to_pairs(ranking: list[str]) -> list[tuple[str, str]]:
+    """
+    Convert an ordered ranking (index 0 = best = most of trait) into all
+    (winner, loser) pairs implied by the ordering.
+    """
+    pairs = []
+    for i in range(len(ranking)):
+        for j in range(i + 1, len(ranking)):
+            pairs.append((ranking[i], ranking[j]))   # i ranked higher than j
+    return pairs
+
+
+# ── Session loading ───────────────────────────────────────────────────────────────
+
+def load_sessions(sessions_dir: Path,
+                  trait: Optional[str] = None) -> list[dict]:
+    """Load all session JSON files; optionally filter by trait."""
+    sessions = []
+    for p in sorted(sessions_dir.glob("*.json")):
+        try:
+            with open(p) as f:
+                s = json.load(f)
+        except Exception as e:
+            print(f"  WARNING: could not load {p.name}: {e}")
+            continue
+        if trait and s.get("trait") != trait:
+            continue
+        sessions.append(s)
+    return sessions
+
+
+def flag_fast_rounds(sessions: list[dict], min_s: float = MIN_ROUND_SECONDS
+                     ) -> int:
+    """
+    Mark rounds with elapsed_s < min_s as suspicious.
+    Returns count of flagged rounds (for reporting); mutates round dicts in-place.
+    """
+    n = 0
+    for sess in sessions:
+        for rnd in sess.get("rounds", []):
+            elapsed = rnd.get("elapsed_s")
+            if elapsed is not None and elapsed < min_s:
+                rnd["_flagged"] = True
+                n += 1
+    return n
+
+
+# ── Elo computation ───────────────────────────────────────────────────────────────
+
+def compute_elo(sessions: list[dict],
+                all_uids: set[str],
+                k: float = ELO_K,
+                skip_flagged: bool = True) -> dict[str, float]:
+    """
+    Run all pairwise comparisons across all sessions/rounds and return
+    final Elo ratings per UID.
+    """
+    ratings = {uid: ELO_START for uid in all_uids}
+    n_pairs = 0
+
+    for sess in sessions:
+        for rnd in sess.get("rounds", []):
+            if skip_flagged and rnd.get("_flagged"):
+                continue
+            ranking = rnd.get("ranking", [])
+            for winner, loser in ranking_to_pairs(ranking):
+                if winner in ratings and loser in ratings:
+                    update_elo(ratings, winner, loser, k=k)
+                    n_pairs += 1
+
+    print(f"  Processed {n_pairs:,} pairwise comparisons from "
+          f"{sum(len(s.get('rounds',[])) for s in sessions)} rounds.")
+    return ratings
+
+
+# ── Inter-rater reliability ───────────────────────────────────────────────────────
+
+def scorer_ranking(sessions: list[dict],
+                   uids_in_common: list[str]) -> dict[str, dict[str, float]]:
+    """
+    For each scorer, build a mean rank per UID (lower = more of trait = better).
+    Only UIDs that appear in at least one of that scorer's rounds are included.
+    Returns {scorer: {uid: mean_rank}}.
+    """
+    # Accumulate (sum_rank, count) per scorer per uid
+    acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+
+    for sess in sessions:
+        scorer = sess.get("scorer", "unknown")
+        for rnd in sess.get("rounds", []):
+            if rnd.get("_flagged"):
+                continue
+            ranking = rnd.get("ranking", [])
+            for pos, uid in enumerate(ranking, start=1):
+                acc[scorer][uid].append(float(pos))
+
+    result = {}
+    for scorer, uid_ranks in acc.items():
+        result[scorer] = {uid: float(np.mean(ranks))
+                          for uid, ranks in uid_ranks.items()}
+    return result
+
+
+def kendall_tau(rank_a: dict[str, float],
+                rank_b: dict[str, float]) -> Optional[float]:
+    """
+    Compute Kendall's τ-b between two scorer dicts on their shared UIDs.
+    Returns None if fewer than 2 shared UIDs.
+    """
+    shared = sorted(set(rank_a) & set(rank_b))
+    if len(shared) < 2:
+        return None
+
+    a = [rank_a[u] for u in shared]
+    b = [rank_b[u] for u in shared]
+
+    # Count concordant / discordant pairs
+    n = len(shared)
+    nc = nd = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            da = a[i] - a[j]
+            db = b[i] - b[j]
+            if da * db > 0:
+                nc += 1
+            elif da * db < 0:
+                nd += 1
+            # ties contribute 0
+
+    # τ-b denominator accounts for ties
+    def tie_count(v):
+        from collections import Counter
+        c = Counter(v)
+        return sum(t * (t - 1) // 2 for t in c.values())
+
+    n_pairs = n * (n - 1) // 2
+    t1 = tie_count(a)
+    t2 = tie_count(b)
+    denom = math.sqrt((n_pairs - t1) * (n_pairs - t2))
+    if denom == 0:
+        return None
+    return (nc - nd) / denom
+
+
+def compute_irr(sessions: list[dict]) -> list[dict]:
+    """
+    Compute pairwise Kendall τ between all scorer pairs.
+    Returns list of dicts with scorer_a, scorer_b, tau, n_shared_uids.
+    """
+    scorer_ranks = scorer_ranking(sessions, [])
+    scorers = sorted(scorer_ranks.keys())
+    rows = []
+    for sa, sb in combinations(scorers, 2):
+        shared = set(scorer_ranks[sa]) & set(scorer_ranks[sb])
+        tau = kendall_tau(scorer_ranks[sa], scorer_ranks[sb])
+        rows.append({
+            "scorer_a":     sa,
+            "scorer_b":     sb,
+            "tau":          round(tau, 4) if tau is not None else None,
+            "n_shared_uids": len(shared),
+        })
+    return rows
+
+
+# ── Aggregation helpers ───────────────────────────────────────────────────────────
+
+def bird_averages(elo_scores: dict[str, float],
+                  uid_meta: dict[str, dict]) -> dict[str, dict]:
+    """
+    Average Elo scores by bird_id.
+    Returns {bird_id: {mean_elo, sd_elo, n_snippets, role}}.
+    """
+    by_bird: dict[str, list[float]] = defaultdict(list)
+    bird_role: dict[str, str] = {}
+    for uid, score in elo_scores.items():
+        meta = uid_meta.get(uid)
+        if not meta:
+            continue
+        bird_id = meta["bird_id"]
+        by_bird[bird_id].append(score)
+        bird_role[bird_id] = meta["role"]
+
+    result = {}
+    for bird_id, scores in by_bird.items():
+        result[bird_id] = {
+            "bird_id":    bird_id,
+            "role":       bird_role[bird_id],
+            "mean_elo":   round(float(np.mean(scores)), 2),
+            "sd_elo":     round(float(np.std(scores)), 2),
+            "n_snippets": len(scores),
+        }
+    return result
+
+
+def role_summary(bird_avgs: dict[str, dict]) -> dict[str, dict]:
+    """
+    Summarize mean/sd/n at the role level.
+    """
+    by_role: dict[str, list[float]] = defaultdict(list)
+    for info in bird_avgs.values():
+        by_role[info["role"]].append(info["mean_elo"])
+
+    result = {}
+    for role, vals in by_role.items():
+        result[role] = {
+            "role":     role,
+            "n_birds":  len(vals),
+            "mean_elo": round(float(np.mean(vals)), 2),
+            "sd_elo":   round(float(np.std(vals)), 2),
+        }
+    return result
+
+
+# ── CSV / text writers ────────────────────────────────────────────────────────────
+
+def write_csv(rows: list[dict], path: Path) -> None:
+    if not rows:
+        path.write_text("(no data)\n", encoding="utf-8")
+        return
+    keys = list(rows[0].keys())
+    lines = [",".join(str(k) for k in keys)]
+    for r in rows:
+        lines.append(",".join("" if r[k] is None else str(r[k]) for k in keys))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_summary(
+    batch_id:   str,
+    trait:      str,
+    pairing:    dict,
+    sessions:   list[dict],
+    n_flagged:  int,
+    elo_scores: dict[str, float],
+    bird_avgs:  dict[str, dict],
+    irr_rows:   list[dict],
+    results_dir: Path,
+) -> None:
+    nf = pairing["nest_father"]
+    gf = pairing["genetic_father"]
+    n_rounds = sum(len(s.get("rounds", [])) for s in sessions)
+    scorers  = sorted({s.get("scorer", "?") for s in sessions})
+
+    role_stats = role_summary(bird_avgs)
+
+    lines = [
+        f"=== Ranking Analysis ===",
+        f"Batch:   {batch_id}",
+        f"Pairing: {nf} × {gf}",
+        f"Trait:   {trait.replace('_', ' ').title()}",
+        f"",
+        f"Sessions: {len(sessions)}",
+        f"Scorers:  {', '.join(scorers)}",
+        f"Rounds:   {n_rounds}   ({n_flagged} flagged as too-fast)",
+        f"UIDs:     {len(elo_scores)}",
+        f"",
+        f"--- Elo scores by role (higher = more of trait) ---",
+    ]
+
+    for role in ROLE_ORDER:
+        if role not in role_stats:
+            continue
+        s = role_stats[role]
+        label = ROLE_LABELS.get(role, role)
+        lines.append(f"  {label:<30}  n={s['n_birds']:>3}  "
+                     f"mean={s['mean_elo']:>7.1f}  sd={s['sd_elo']:>6.1f}")
+
+    # Offspring vs fathers
+    xf_vals  = [v["mean_elo"] for v in bird_avgs.values() if v["role"] == "xf"]
+    nf_vals  = [v["mean_elo"] for v in bird_avgs.values() if v["role"] == "nest_father"]
+    gf_vals  = [v["mean_elo"] for v in bird_avgs.values() if v["role"] == "genetic_father"]
+
+    lines += ["", "--- Offspring vs. fathers ---"]
+    if xf_vals and nf_vals:
+        diff = np.mean(xf_vals) - np.mean(nf_vals)
+        lines.append(f"  XF − nest_father:    {diff:+.1f} Elo points")
+    if xf_vals and gf_vals:
+        diff = np.mean(xf_vals) - np.mean(gf_vals)
+        lines.append(f"  XF − genetic_father: {diff:+.1f} Elo points")
+
+    if irr_rows:
+        lines += ["", "--- Inter-rater reliability (Kendall τ) ---"]
+        for r in irr_rows:
+            tau_str = f"{r['tau']:.3f}" if r["tau"] is not None else "n/a"
+            lines.append(f"  {r['scorer_a']} vs {r['scorer_b']}: "
+                         f"τ = {tau_str}  (n={r['n_shared_uids']} shared songs)")
+
+    lines += ["", f"Output files: {results_dir}"]
+
+    txt = "\n".join(lines) + "\n"
+    out = results_dir / f"{batch_id}_{trait}_summary.txt"
+    out.write_text(txt, encoding="utf-8")
+    print(txt)
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────────
+
+def analyze_one_trait(
+    batch_dir:    Path,
+    trait:        str,
+    uid_meta:     dict[str, dict],
+    pairing:      dict,
+    k:            float,
+    min_rounds:   int,
+    results_dir:  Path,
+) -> None:
+    batch_id     = batch_dir.name
+    sessions_dir = batch_dir / "sessions"
+
+    print(f"\n── {trait} ──")
+    sessions = load_sessions(sessions_dir, trait=trait)
+    if not sessions:
+        print(f"  No session files found for trait '{trait}' in {sessions_dir}")
+        return
+
+    # Check minimum rounds per scorer
+    scorer_counts: dict[str, int] = defaultdict(int)
+    for s in sessions:
+        scorer_counts[s.get("scorer", "?")] += len(s.get("rounds", []))
+    for scorer, n in scorer_counts.items():
+        if n < min_rounds:
+            print(f"  WARNING: scorer '{scorer}' has only {n} round(s) "
+                  f"(--min-rounds={min_rounds})")
+
+    n_flagged = flag_fast_rounds(sessions)
+    if n_flagged:
+        print(f"  Flagged {n_flagged} suspiciously fast rounds (<{MIN_ROUND_SECONDS}s)")
+
+    all_uids = set(uid_meta.keys())
+    elo_scores = compute_elo(sessions, all_uids, k=k)
+
+    # Per-snippet CSV
+    snippet_rows = []
+    for uid, score in sorted(elo_scores.items(), key=lambda x: -x[1]):
+        meta = uid_meta.get(uid, {})
+        snippet_rows.append({
+            "uid":      uid,
+            "elo":      round(score, 2),
+            "bird_id":  meta.get("bird_id", ""),
+            "role":     meta.get("role", ""),
+        })
+    write_csv(snippet_rows, results_dir / f"{batch_id}_{trait}_elo.csv")
+
+    # Per-bird CSV
+    bird_avgs = bird_averages(elo_scores, uid_meta)
+    bird_rows = sorted(bird_avgs.values(), key=lambda x: -x["mean_elo"])
+    write_csv(bird_rows, results_dir / f"{batch_id}_{trait}_birds.csv")
+
+    # IRR
+    irr_rows = compute_irr(sessions)
+    write_csv(irr_rows, results_dir / f"{batch_id}_{trait}_irr.csv")
+
+    # Summary text
+    write_summary(
+        batch_id, trait, pairing,
+        sessions, n_flagged,
+        elo_scores, bird_avgs, irr_rows,
+        results_dir,
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Aggregate session JSON rankings into Elo scores and IRR stats."
+    )
+    parser.add_argument("batch_dir", help="Path to batch directory")
+    parser.add_argument("--trait", default="all",
+                        help="Trait to analyze: stereotypy, repeat_propensity, or 'all'")
+    parser.add_argument("--k",    type=float, default=ELO_K,
+                        help=f"Elo K-factor (default {ELO_K})")
+    parser.add_argument("--min-rounds", type=int, default=1,
+                        help="Warn if a scorer has fewer than this many rounds")
+    parser.add_argument("--output-dir", default=None,
+                        help="Override output directory (default: batch_dir/../results/)")
+    args = parser.parse_args()
+
+    batch_dir = Path(args.batch_dir).resolve()
+    h5_path   = batch_dir / "batch.h5"
+
+    if not h5_path.exists():
+        print(f"ERROR: {h5_path} not found.")
+        return
+
+    # ── Load uid_meta and pairing from HDF5 ──────────────────────────────────
+    uid_meta = {}
+    with tables.open_file(str(h5_path), mode="r") as h5:
+        pairing = json.loads(h5.root.config._v_attrs["pairing"])
+        for row in h5.root.manifest.iterrows():
+            uid = row["uid"].decode()
+            uid_meta[uid] = {
+                "bird_id":  row["bird_id"].decode(),
+                "role":     row["role"].decode(),
+                "spec_idx": int(row["spec_idx"]),
+            }
+
+    print(f"Loaded {len(uid_meta)} UIDs from {h5_path.name}")
+
+    # ── Results directory ─────────────────────────────────────────────────────
+    if args.output_dir:
+        results_dir = Path(args.output_dir)
+    else:
+        results_dir = batch_dir.parent.parent / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    traits = ["stereotypy", "repeat_propensity"] if args.trait == "all" \
+             else [args.trait]
+
+    for trait in traits:
+        analyze_one_trait(
+            batch_dir  = batch_dir,
+            trait      = trait,
+            uid_meta   = uid_meta,
+            pairing    = pairing,
+            k          = args.k,
+            min_rounds = args.min_rounds,
+            results_dir = results_dir,
+        )
+
+    print(f"\nDone. Results in: {results_dir}")
+
+
+if __name__ == "__main__":
+    main()

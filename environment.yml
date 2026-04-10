@@ -1,0 +1,21 @@
+name: supervised_phenotype_scoring
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=1.24
+  - scipy>=1.11
+  - matplotlib>=3.7
+  - pandas>=2.0
+  - pytables>=3.8        # the 'tables' package (HDF5)
+  - flask>=3.0
+  - pip
+  - pip:
+    - soundfile>=0.12    # fast audio I/O (WAV, FLAC, OGG, …)
+    - evfuncs>=0.3       # optional: .cbin file support
+    - boto3>=1.28        # optional: S3 upload (upload_batch.py only)
+    # docs
+    - sphinx>=7.0
+    - sphinx-rtd-theme>=2.0
+    - numpydoc>=1.6
