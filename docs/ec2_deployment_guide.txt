@@ -160,13 +160,24 @@ Step 17: Get the current public IP (required after every restart)     [LOCAL]
 Step 18: SSH into the instance                                        [LOCAL]
     ssh -i "C:\Users\Eric\.ssh\scoring-key" ubuntu@<public-ip>
 
-Step 19: Start the ranking app                                        [EC2]
+Step 19: Start the ranking app in the background                      [EC2]
   Purpose: Launches the Flask web server so scorers can connect via browser.
+           Running with nohup detaches the process so it keeps running even
+           if the SSH terminal is closed.
     conda activate supervised_phenotype_scoring
     cd ~/supervised_phenotype_scoring
-    python ranking_app.py batches/<batch_name>
+    nohup python ranking_app.py batches/<batch_name> > app.log 2>&1 &
   The app runs at: http://<public-ip>:5000
   Share this URL with scorers — no installation required on their end.
+
+  To confirm the app is running:                                       [EC2]
+    ps aux | grep ranking_app
+
+  To view live app output (requests, errors):                          [EC2]
+    tail -f app.log
+
+  To stop the app when scoring is complete:                            [EC2]
+    pkill -f ranking_app.py
 
 Step 20: Retrieve session files after scoring is complete             [LOCAL]
   Purpose: Downloads JSON ranking records from EC2 for local analysis.
