@@ -1,0 +1,251 @@
+EC2 Deployment Guide — supervised_phenotype_scoring
+=====================================================
+Date: 2026-04-12
+Purpose: Host the ranking app on AWS EC2 so expert scorers off-network can
+         access it via a browser without needing a local installation.
+
+Each step is labelled:
+  [LOCAL]  — run in PowerShell on your local Windows machine
+  [EC2]    — run in an SSH terminal on the EC2 instance
+
+Steps are grouped by when they need to be done:
+  ONE-TIME SETUP    — done once when first configuring the server
+  PER BATCH         — repeated each time a new batch is added
+  PER SESSION       — repeated each time the server is restarted or app relaunched
+
+Known fixed values for this deployment:
+  Instance ID : i-06dd96e1cc57fe832
+  Volume ID   : vol-09f6ccbc5dc1d36da
+  Region      : us-east-2
+  AWS profile : admin
+  SSH key     : C:\Users\Eric\.ssh\scoring-key
+  EC2 user    : ubuntu
+
+
+==============================================================================
+ONE-TIME SETUP
+==============================================================================
+
+--- AWS account and CLI ---
+
+Step 1: Create an AWS account                                         [LOCAL]
+  Purpose: Provides access to AWS cloud services including EC2 virtual machines.
+  URL: https://aws.amazon.com/
+
+Step 2: Set up IAM Identity Center (SSO)                              [LOCAL]
+  Purpose: Provides secure, temporary CLI credentials without using root access
+           keys, which AWS explicitly recommends against for programmatic access.
+  Console path: IAM Identity Center → Enable → Create a user → Create a
+                permission set (AdministratorAccess) → Assign user to account.
+
+Step 3: Install the AWS CLI                                           [LOCAL]
+  Purpose: Allows you to control AWS services from the command line.
+  URL: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+  Verify:
+    aws --version
+
+Step 4: Configure SSO profile                                         [LOCAL]
+  Purpose: Stores your SSO start URL and region so `aws` commands authenticate
+           automatically via browser login.
+    aws configure sso
+      - SSO start URL: your IAM Identity Center URL
+      - SSO region: us-east-2
+      - Profile name: admin
+
+Step 5: Generate an SSH key pair                                      [LOCAL]
+  Purpose: Creates a public/private key pair used to authenticate SSH and SCP
+           connections to the EC2 instance without a password.
+  When prompted for a passphrase, press Enter for no passphrase, or enter one
+  to protect the private key with a password.
+    ssh-keygen -t ed25519 -f C:\Users\Eric\.ssh\scoring-key
+  This produces:
+    C:\Users\Eric\.ssh\scoring-key       (private key — never share)
+    C:\Users\Eric\.ssh\scoring-key.pub   (public key — uploaded to AWS)
+
+Step 6: Import public key to AWS                                      [LOCAL]
+  Purpose: Registers the public key with EC2 so the instance will accept SSH
+           connections authenticated with your private key.
+    aws ec2 import-key-pair `
+      --key-name scoring-key `
+      --public-key-material fileb://C:\Users\Eric\.ssh\scoring-key.pub `
+      --region us-east-2 --profile admin
+
+--- EC2 instance launch ---
+
+Step 7: Launch EC2 instance                                           [LOCAL]
+  Purpose: Starts a virtual machine that will run the Flask app.
+  Spec: t3.small, Ubuntu 22.04 LTS, 60 GB gp2 storage, key pair = scoring-key.
+    aws ec2 run-instances `
+      --image-id <ami-id> `
+      --instance-type t3.small `
+      --key-name scoring-key `
+      --security-group-ids <sg-id> `
+      --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":60}}]" `
+      --region us-east-2 --profile admin `
+      --count 1
+  Note: Use at least 60 GB — hop=1 HDF5 files are large (~11 GB per batch).
+
+Step 8: Open port 5000 in the security group                          [LOCAL]
+  Purpose: Allows inbound traffic on port 5000 (Flask default) so scorers can
+           reach the app from their browsers.
+    aws ec2 authorize-security-group-ingress `
+      --group-id <sg-id> `
+      --protocol tcp --port 5000 --cidr 0.0.0.0/0 `
+      --region us-east-2 --profile admin
+
+--- EC2 software setup ---
+
+Step 9: SSH into the instance                                         [LOCAL]
+  Purpose: Opens a terminal session on the EC2 machine.
+    ssh -i "C:\Users\Eric\.ssh\scoring-key" ubuntu@<public-ip>
+
+Step 10: Install Miniconda                                            [EC2]
+  Purpose: Provides conda to create an isolated Python environment matching
+           the local development setup.
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    bash Miniconda3-latest-Linux-x86_64.sh -b -p ~/miniconda3
+    ~/miniconda3/bin/conda init bash
+    source ~/.bashrc
+
+Step 11: Clone the repository                                         [EC2]
+  Purpose: Downloads the scoring pipeline code onto the EC2 instance.
+    git clone https://github.com/annie-taylor/supervised_phenotype_scoring.git
+    cd supervised_phenotype_scoring
+
+Step 12: Create the conda environment                                 [EC2]
+  Purpose: Installs all Python dependencies (Flask, NumPy, librosa, h5py, etc.)
+           as specified in environment.yml.
+    conda env create -f environment.yml
+
+Step 13: Create the batches directory                                 [EC2]
+  Purpose: Creates the target folder that scp will copy batch data into.
+    mkdir -p ~/supervised_phenotype_scoring/batches
+
+
+==============================================================================
+PER BATCH  (repeat for each new batch added to the server)
+==============================================================================
+
+Step 14: Log in to AWS CLI (if session has expired — ~8 hours)        [LOCAL]
+  Purpose: Refreshes temporary SSO credentials.
+    aws sso login --profile admin
+  Verify:
+    aws sts get-caller-identity --profile admin
+
+Step 15: Check available disk space                                   [LOCAL]
+  Purpose: Confirm there is enough room before transferring a large HDF5 file.
+    ssh -i "C:\Users\Eric\.ssh\scoring-key" ubuntu@<public-ip> "df -h /"
+  If space is low, see Part: EXPANDING STORAGE below before continuing.
+
+Step 16: Copy batch data to EC2                                       [LOCAL]
+  Purpose: Transfers the HDF5 batch file and exported spectrograms/audio so
+           the app has data to serve. Replace <batch_name> with the actual
+           batch directory name (format: <nf>_<gf>_<YYYYMMDD>).
+    scp -i "C:\Users\Eric\.ssh\scoring-key" -r `
+      "E:\scoring\batches\<batch_name>" `
+      ubuntu@<public-ip>:~/supervised_phenotype_scoring/batches/
+  Note: Transfer takes several minutes for large batches.
+
+
+==============================================================================
+PER SESSION  (repeat each time the app is launched or the server is restarted)
+==============================================================================
+
+Step 17: Get the current public IP (required after every restart)     [LOCAL]
+  Purpose: The public IP changes each time the instance is stopped and started.
+    aws ec2 describe-instances --instance-ids i-06dd96e1cc57fe832 `
+      --region us-east-2 --profile admin `
+      --query "Reservations[0].Instances[0].PublicIpAddress" --output text
+
+Step 18: SSH into the instance                                        [LOCAL]
+    ssh -i "C:\Users\Eric\.ssh\scoring-key" ubuntu@<public-ip>
+
+Step 19: Start the ranking app                                        [EC2]
+  Purpose: Launches the Flask web server so scorers can connect via browser.
+    conda activate supervised_phenotype_scoring
+    cd ~/supervised_phenotype_scoring
+    python ranking_app.py batches/<batch_name>
+  The app runs at: http://<public-ip>:5000
+  Share this URL with scorers — no installation required on their end.
+
+Step 20: Retrieve session files after scoring is complete             [LOCAL]
+  Purpose: Downloads JSON ranking records from EC2 for local analysis.
+    scp -i "C:\Users\Eric\.ssh\scoring-key" -r `
+      ubuntu@<public-ip>:~/supervised_phenotype_scoring/batches/<batch_name>/sessions `
+      "E:\scoring\batches\<batch_name>\"
+
+Step 21: Run analysis locally                                         [LOCAL]
+  Purpose: Computes Elo scores, inter-rater reliability (Kendall tau), and
+           writes a flagged-snippets CSV from all collected session files.
+    conda activate supervised_phenotype_scoring
+    python analyze_rankings.py batches/<batch_name> --trait all
+  Outputs written to results/:
+    <batch_name>_stereotypy_elo.csv       per-snippet Elo scores
+    <batch_name>_stereotypy_birds.csv     per-bird averages by role
+    <batch_name>_stereotypy_irr.csv       pairwise Kendall tau
+    <batch_name>_stereotypy_summary.txt   human-readable digest
+    <batch_name>_flagged.csv              noise/call snippets to exclude
+
+
+==============================================================================
+EXPANDING STORAGE  (run when disk is approaching capacity)
+==============================================================================
+The volume can be expanded without stopping the instance or losing data.
+
+Step A: Log in to AWS CLI if session has expired                      [LOCAL]
+    aws sso login --profile admin
+
+Step B: Resize the EBS volume                                         [LOCAL]
+  Replace <new_size_gb> with your target (e.g. 100). Size can only increase.
+    aws ec2 modify-volume --volume-id vol-09f6ccbc5dc1d36da `
+      --size <new_size_gb> --region us-east-2 --profile admin
+
+Step C: If the disk is 100% full, free space before expanding         [EC2]
+  Purpose: growpart needs a few MB in /tmp; delete an old batch first if full.
+    rm -rf ~/supervised_phenotype_scoring/batches/<batch_name>
+
+Step D: Expand the partition and filesystem                           [EC2]
+  Purpose: AWS resizes the block device, but the OS must be told to use the
+           new space.
+    sudo growpart /dev/nvme0n1 1
+    sudo resize2fs /dev/nvme0n1p1
+    df -h /
+  The last command should confirm the new available space.
+
+Note: No instance restart is required.
+
+
+==============================================================================
+STORAGE AND COMPUTE COSTS
+==============================================================================
+EBS (gp2) storage: $0.10/GB/month — charged continuously whether instance
+is running or stopped.
+
+  60 GB  → ~$6.00/month
+  100 GB → ~$10.00/month
+  200 GB → ~$20.00/month
+
+EC2 compute (t3.small): ~$0.0208/hour — only charged while running.
+  Running 24/7 → ~$15/month. Stop when not in use to avoid this cost.
+
+To stop the instance when not in use:                                 [LOCAL]
+    aws ec2 stop-instances --instance-ids i-06dd96e1cc57fe832 `
+      --region us-east-2 --profile admin
+
+To start it again:                                                    [LOCAL]
+    aws ec2 start-instances --instance-ids i-06dd96e1cc57fe832 `
+      --region us-east-2 --profile admin
+  Then run Step 17 to get the new public IP.
+
+
+==============================================================================
+NOTES
+==============================================================================
+- The public IP changes on every stop/start. If a stable URL is needed for
+  scorers, set up an Elastic IP (one free per running instance).
+- Flask session data is in-memory; restarting the app mid-session does not
+  corrupt completed rounds (each round is saved to JSON on submit).
+- The HDF5 file and bird identity mapping never leave your local machine.
+  Only session JSON files need to be retrieved from EC2.
+- To update the app code on EC2 after a local change:                 [EC2]
+    cd ~/supervised_phenotype_scoring && git pull

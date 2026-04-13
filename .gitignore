@@ -19,6 +19,7 @@ batches/*/export/
 batches/*/sessions/
 batches/*
 results/
+static/
 
 #Reference files (these should be copied over but not git)
 refs/
@@ -37,3 +38,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# claude
+.claude
