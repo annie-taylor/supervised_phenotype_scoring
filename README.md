@@ -11,7 +11,7 @@ reliability statistics.
 Designed for cross-foster experiments where scorer identity knowledge would
 bias trait ratings (stereotypy, repeat propensity, etc.).
 
-**API docs:** https://\<user\>.github.io/supervised-phenotype-scoring/
+**API docs:** https://annie-taylor.github.io/supervised_phenotype_scoring/
 
 ---
 
