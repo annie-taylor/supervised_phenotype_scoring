@@ -5,8 +5,10 @@ A local web application for **anonymised, supervised scoring of birdsong phenoty
 (stereotypy, repeat propensity, …) by human raters.
 
 Songs are extracted from audio recordings, stored in an HDF5 batch, served via a
-drag-and-drop ranking interface, and aggregated into per-bird Elo scores with
-inter-rater reliability statistics.
+drag-and-drop ranking interface with interactive Plotly comparison panels, and
+aggregated into per-bird Elo scores with inter-rater reliability statistics.
+
+See the project README on GitHub for installation, configuration, and step-by-step usage.
 
 .. toctree::
    :maxdepth: 2
@@ -17,6 +19,7 @@ inter-rater reliability statistics.
    api/export_batch
    api/ranking_app
    api/analyze_rankings
+   api/printout_generator
    api/upload_batch
    api/make_test_batch
 

@@ -40,7 +40,7 @@
     .song-card {
       background: #111; border: 1px solid #333; border-radius: 8px;
       padding: 10px; flex: 0 0 auto; width: 190px;
-      transition: border-color 0.15s, box-shadow 0.15s;
+      transition: border-color 0.15s, box-shadow 0.15s, opacity 0.15s;
       user-select: none;
     }
     .song-card:hover  { border-color: #555; }
@@ -48,6 +48,9 @@
                         box-shadow: 0 0 12px #4a9eff44; }
     .sortable-ghost   { opacity: 0.35; }
     .sortable-drag    { cursor: grabbing; }
+
+    .song-card.flagged { border-color: #c0392b; opacity: 0.55; }
+    .song-card.flagged .rank-badge { color: #c0392b; }
 
     .rank-badge {
       text-align: center; font-size: 1.6em; font-weight: bold;
@@ -65,6 +68,30 @@
     .uid-label {
       font-size: 0.6em; color: #444; margin-top: 6px;
       text-align: center; letter-spacing: 0.02em;
+    }
+
+    /* ── Card action buttons ── */
+    .card-actions {
+      display: flex; gap: 4px; margin-top: 7px; align-items: center;
+    }
+    .btn-panel {
+      flex: 0 0 26px; height: 22px;
+      background: #1a1a1a; border: 1px solid #2a2a2a;
+      color: #4a9eff; font-family: monospace; font-size: 0.78em; font-weight: bold;
+      border-radius: 4px; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .btn-panel:hover { background: #252525; border-color: #4a9eff; }
+    .btn-flag {
+      flex: 1; height: 22px;
+      background: none; border: 1px solid #2a2a2a;
+      color: #3a3a3a; font-family: monospace; font-size: 0.68em;
+      border-radius: 4px; cursor: pointer;
+      transition: color 0.12s, border-color 0.12s, background 0.12s;
+    }
+    .btn-flag:hover { color: #c0392b; border-color: #c0392b; }
+    .song-card.flagged .btn-flag {
+      color: #c0392b; border-color: #c0392b; background: #1a0505;
     }
 
     /* ── Controls ── */
@@ -96,6 +123,34 @@
       height: 100%; background: #4a9eff; border-radius: 2px;
       transition: width 0.3s;
     }
+
+    /* ── Comparison panels ── */
+    .comparison-section {
+      margin-top: 28px;
+      border-top: 1px solid #222;
+      padding-top: 16px;
+    }
+    .comparison-header {
+      font-size: 0.78em; color: #555; margin-bottom: 10px;
+    }
+    .comparison-panels {
+      display: flex; gap: 12px;
+    }
+    .comparison-panel {
+      flex: 1; background: #0d0d0d; border: 1px solid #222;
+      border-radius: 8px; overflow: hidden; min-height: 300px;
+      position: relative;
+    }
+    .panel-label {
+      position: absolute; top: 8px; left: 12px;
+      font-size: 1.1em; font-weight: bold; color: #4a9eff;
+      z-index: 10; pointer-events: none;
+    }
+    .panel-placeholder {
+      display: flex; align-items: center; justify-content: center;
+      height: 300px; color: #2e2e2e; font-size: 0.82em;
+    }
+    .panel-plot { width: 100%; }
   </style>
 </head>
 <body>
@@ -111,7 +166,9 @@
     Drag cards so that <strong>most {{ trait.replace('_',' ') }}</strong>
     is on the <strong>left (rank 1)</strong> and
     <strong>least</strong> is on the <strong>right</strong>.
-    Click a spectrogram to play its audio.
+    Click a spectrogram to play audio. Use <strong>A / B</strong> to load a song
+    into a comparison panel below. Use <strong>flag noise/call</strong> to exclude
+    a snippet from scoring.
   </div>
 
   <div class="axis-labels">
@@ -132,6 +189,11 @@
         </audio>
       </div>
       <div class="uid-label">{{ song.uid_short }}</div>
+      <div class="card-actions">
+        <button class="btn-panel" onclick="loadToPanel('{{ song.uid }}', 'A')">A</button>
+        <button class="btn-panel" onclick="loadToPanel('{{ song.uid }}', 'B')">B</button>
+        <button class="btn-flag" onclick="toggleFlag(this)">flag noise/call</button>
+      </div>
     </div>
     {% endfor %}
   </div>
@@ -152,7 +214,27 @@
     </div>
   </div>
 
+  <!-- ── Comparison panels ─────────────────────────────────────────────────── -->
+  <div class="comparison-section">
+    <div class="comparison-header">
+      Comparison panels — click A or B on any card to load it here for detailed inspection
+    </div>
+    <div class="comparison-panels">
+      <div class="comparison-panel" id="panel-A">
+        <div class="panel-label">A</div>
+        <div class="panel-placeholder" id="placeholder-A">click A on a card to load</div>
+        <div class="panel-plot" id="plot-A" style="display:none"></div>
+      </div>
+      <div class="comparison-panel" id="panel-B">
+        <div class="panel-label">B</div>
+        <div class="panel-placeholder" id="placeholder-B">click B on a card to load</div>
+        <div class="panel-plot" id="plot-B" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/Sortable.min.js"></script>
+  <script src="/static/plotly.min.js"></script>
   <script>
     var _startTime = Date.now();
 
@@ -166,8 +248,14 @@
     });
 
     function updateRankNumbers() {
-      document.querySelectorAll('#song-list .song-card').forEach(function(card, i) {
-        card.querySelector('.rank-num').textContent = i + 1;
+      var rank = 1;
+      document.querySelectorAll('#song-list .song-card').forEach(function(card) {
+        var badge = card.querySelector('.rank-num');
+        if (card.classList.contains('flagged')) {
+          badge.textContent = '✕';
+        } else {
+          badge.textContent = rank++;
+        }
       });
     }
 
@@ -177,7 +265,6 @@
       img.addEventListener('click', function() {
         var audio = img.closest('.song-card').querySelector('audio');
         if (audio.paused) {
-          // Pause all others first
           document.querySelectorAll('audio').forEach(function(a) {
             if (a !== audio) { a.pause(); a.currentTime = 0; }
           });
@@ -189,20 +276,97 @@
       });
     });
 
+    // ── Flag noise/call ───────────────────────────────────────────────────
+    function toggleFlag(btn) {
+      var card = btn.closest('.song-card');
+      card.classList.toggle('flagged');
+      btn.textContent = card.classList.contains('flagged') ? 'unflag' : 'flag noise/call';
+      updateRankNumbers();
+    }
+
+    // ── Comparison panels ─────────────────────────────────────────────────
+    function loadToPanel(uid, panel) {
+      var placeholder = document.getElementById('placeholder-' + panel);
+      var plotDiv     = document.getElementById('plot-' + panel);
+
+      placeholder.textContent = 'Loading…';
+      placeholder.style.display = 'flex';
+      plotDiv.style.display = 'none';
+
+      fetch('/spec_interactive/' + uid)
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(data) {
+          if (data.error) throw new Error(data.error);
+          placeholder.style.display = 'none';
+          plotDiv.style.display = 'block';
+          renderSpec('plot-' + panel, data);
+        })
+        .catch(function(err) {
+          placeholder.textContent = 'Error: ' + err;
+        });
+    }
+
+    function renderSpec(divId, data) {
+      var layout = {
+        margin: { l: 58, r: 15, t: 28, b: 48 },
+        paper_bgcolor: '#0d0d0d',
+        plot_bgcolor:  '#0a0a0a',
+        font: { color: '#666', family: 'monospace', size: 10 },
+        xaxis: {
+          title: { text: 'time (s)', standoff: 6 },
+          color: '#555', gridcolor: '#1a1a1a', tickcolor: '#333',
+          showline: true, linecolor: '#333',
+        },
+        yaxis: {
+          title: { text: 'Hz', standoff: 6 },
+          color: '#555', gridcolor: '#1a1a1a', tickcolor: '#333',
+          showline: true, linecolor: '#333',
+        },
+        dragmode: 'zoom',
+        height: 300,
+      };
+      var config = {
+        responsive: true,
+        displaylogo: false,
+        scrollZoom: true,
+        modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d', 'toImage'],
+      };
+      Plotly.react(divId, [{
+        type: 'heatmap',
+        z:    data.z,
+        x:    data.x,
+        y:    data.y,
+        colorscale: 'Hot',
+        showscale:  false,
+        zsmooth:    false,
+        hovertemplate: '%{y:.0f} Hz &nbsp; %{x:.3f} s<extra></extra>',
+      }], layout, config);
+    }
+
     // ── Submit ────────────────────────────────────────────────────────────
     function submitRanking() {
       var cards   = document.querySelectorAll('#song-list .song-card');
-      var ranking = Array.from(cards).map(function(c) { return c.dataset.uid; });
+      var ranking = [];
+      var flagged = [];
+      cards.forEach(function(c) {
+        if (c.classList.contains('flagged')) {
+          flagged.push(c.dataset.uid);
+        } else {
+          ranking.push(c.dataset.uid);
+        }
+      });
       var elapsed = (Date.now() - _startTime) / 1000;
 
-      // Disable button to prevent double-submit
       document.querySelector('.btn-submit').disabled = true;
       document.querySelector('.btn-submit').textContent = 'Saving…';
 
       fetch('/submit', {
         method:  'POST',
         headers: {'Content-Type': 'application/json'},
-        body:    JSON.stringify({ranking: ranking, elapsed_s: elapsed}),
+        body:    JSON.stringify({ranking: ranking, flagged: flagged, elapsed_s: elapsed}),
       })
       .then(function(r) { return r.json(); })
       .then(function(data) {

@@ -119,22 +119,37 @@ def flag_fast_rounds(sessions: list[dict], min_s: float = MIN_ROUND_SECONDS
 
 # ── Elo computation ───────────────────────────────────────────────────────────────
 
+def collect_flagged_uids(sessions: list[dict]) -> set[str]:
+    """Return the set of UIDs flagged as noise/call by any scorer in any round."""
+    flagged: set[str] = set()
+    for sess in sessions:
+        for rnd in sess.get("rounds", []):
+            flagged.update(rnd.get("flagged", []))
+    return flagged
+
+
 def compute_elo(sessions: list[dict],
                 all_uids: set[str],
                 k: float = ELO_K,
-                skip_flagged: bool = True) -> dict[str, float]:
+                skip_flagged: bool = True,
+                excluded_uids: set[str] | None = None) -> dict[str, float]:
     """
     Run all pairwise comparisons across all sessions/rounds and return
     final Elo ratings per UID.
+
+    UIDs in *excluded_uids* are not initialised and are silently dropped from
+    every round's ranking before generating pairs, so they never influence the
+    ratings of other snippets.
     """
-    ratings = {uid: ELO_START for uid in all_uids}
-    n_pairs = 0
+    excluded = excluded_uids or set()
+    ratings  = {uid: ELO_START for uid in all_uids if uid not in excluded}
+    n_pairs  = 0
 
     for sess in sessions:
         for rnd in sess.get("rounds", []):
             if skip_flagged and rnd.get("_flagged"):
                 continue
-            ranking = rnd.get("ranking", [])
+            ranking = [uid for uid in rnd.get("ranking", []) if uid not in excluded]
             for winner, loser in ranking_to_pairs(ranking):
                 if winner in ratings and loser in ratings:
                     update_elo(ratings, winner, loser, k=k)
@@ -296,16 +311,50 @@ def write_csv(rows: list[dict], path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_flagged_csv(
+    flagged_uids: set[str],
+    uid_meta:     dict[str, dict],
+    sessions:     list[dict],
+    results_dir:  Path,
+    batch_id:     str,
+) -> None:
+    """Write flagged noise/call snippets to CSV for exclusion from future batches."""
+    if not flagged_uids:
+        return
+    flag_scorers: dict[str, set] = defaultdict(set)
+    for sess in sessions:
+        scorer = sess.get("scorer", "unknown")
+        for rnd in sess.get("rounds", []):
+            for uid in rnd.get("flagged", []):
+                flag_scorers[uid].add(scorer)
+
+    rows = []
+    for uid in sorted(flagged_uids):
+        meta = uid_meta.get(uid, {})
+        rows.append({
+            "uid":               uid,
+            "bird_id":           meta.get("bird_id",         ""),
+            "role":              meta.get("role",             ""),
+            "source_file":       meta.get("source_file",     ""),
+            "snippet_start_s":   meta.get("snippet_start_s", ""),
+            "n_scorers_flagged": len(flag_scorers.get(uid, set())),
+            "flagged_by":        ";".join(sorted(flag_scorers.get(uid, set()))),
+        })
+    write_csv(rows, results_dir / f"{batch_id}_flagged.csv")
+    print(f"  Wrote {len(rows)} flagged snippets → {batch_id}_flagged.csv")
+
+
 def write_summary(
-    batch_id:   str,
-    trait:      str,
-    pairing:    dict,
-    sessions:   list[dict],
-    n_flagged:  int,
-    elo_scores: dict[str, float],
-    bird_avgs:  dict[str, dict],
-    irr_rows:   list[dict],
-    results_dir: Path,
+    batch_id:        str,
+    trait:           str,
+    pairing:         dict,
+    sessions:        list[dict],
+    n_flagged:       int,
+    n_noise_flagged: int,
+    elo_scores:      dict[str, float],
+    bird_avgs:       dict[str, dict],
+    irr_rows:        list[dict],
+    results_dir:     Path,
 ) -> None:
     nf = pairing["nest_father"]
     gf = pairing["genetic_father"]
@@ -314,6 +363,8 @@ def write_summary(
 
     role_stats = role_summary(bird_avgs)
 
+    noise_note = (f"  ({n_noise_flagged} excluded as noise/call)"
+                  if n_noise_flagged else "")
     lines = [
         f"=== Ranking Analysis ===",
         f"Batch:   {batch_id}",
@@ -323,7 +374,7 @@ def write_summary(
         f"Sessions: {len(sessions)}",
         f"Scorers:  {', '.join(scorers)}",
         f"Rounds:   {n_rounds}   ({n_flagged} flagged as too-fast)",
-        f"UIDs:     {len(elo_scores)}",
+        f"UIDs:     {len(elo_scores)}{noise_note}",
         f"",
         f"--- Elo scores by role (higher = more of trait) ---",
     ]
@@ -397,8 +448,14 @@ def analyze_one_trait(
     if n_flagged:
         print(f"  Flagged {n_flagged} suspiciously fast rounds (<{MIN_ROUND_SECONDS}s)")
 
-    all_uids = set(uid_meta.keys())
-    elo_scores = compute_elo(sessions, all_uids, k=k)
+    # Collect noise/call flags — excluded from Elo entirely
+    noise_uids = collect_flagged_uids(sessions)
+    if noise_uids:
+        print(f"  Excluding {len(noise_uids)} noise/call snippet(s) flagged by scorers")
+        write_flagged_csv(noise_uids, uid_meta, sessions, results_dir, batch_id)
+
+    all_uids   = set(uid_meta.keys())
+    elo_scores = compute_elo(sessions, all_uids, k=k, excluded_uids=noise_uids)
 
     # Per-snippet CSV
     snippet_rows = []
@@ -424,7 +481,7 @@ def analyze_one_trait(
     # Summary text
     write_summary(
         batch_id, trait, pairing,
-        sessions, n_flagged,
+        sessions, n_flagged, len(noise_uids),
         elo_scores, bird_avgs, irr_rows,
         results_dir,
     )
@@ -459,9 +516,11 @@ def main() -> None:
         for row in h5.root.manifest.iterrows():
             uid = row["uid"].decode()
             uid_meta[uid] = {
-                "bird_id":  row["bird_id"].decode(),
-                "role":     row["role"].decode(),
-                "spec_idx": int(row["spec_idx"]),
+                "bird_id":         row["bird_id"].decode(),
+                "role":            row["role"].decode(),
+                "spec_idx":        int(row["spec_idx"]),
+                "source_file":     row["source_file"].decode(),
+                "snippet_start_s": float(row["snippet_start_s"]),
             }
 
     print(f"Loaded {len(uid_meta)} UIDs from {h5_path.name}")

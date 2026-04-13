@@ -14,11 +14,12 @@ release   = "0.1.0"
 
 # ── Extensions ────────────────────────────────────────────────────────────────
 extensions = [
-    "sphinx.ext.autodoc",      # pull docstrings from source
-    "sphinx.ext.napoleon",     # NumPy / Google docstring styles
-    "sphinx.ext.viewcode",     # [source] links in the HTML
-    "sphinx.ext.intersphinx",  # cross-link to numpy, scipy, etc.
-    "numpydoc",                # richer NumPy docstring rendering
+    "sphinx.ext.autodoc",        # pull docstrings from source
+    "sphinx.ext.napoleon",       # NumPy / Google docstring styles
+    "sphinx.ext.viewcode",       # [source] links in the HTML
+    "sphinx.ext.intersphinx",    # cross-link to numpy, scipy, etc.
+    "sphinx.ext.githubpages",    # writes .nojekyll for GitHub Pages
+    "numpydoc",                  # richer NumPy docstring rendering
 ]
 
 # ── autodoc settings ──────────────────────────────────────────────────────────

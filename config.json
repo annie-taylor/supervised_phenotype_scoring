@@ -1,6 +1,6 @@
 {
   "project_dir":            "E:/scoring/",
-  "ref_dir":    "E:/refs/",
+  "ref_dir":    "E:/scoring/refs/",
   "audio_candidates_cache": "E:/scoring/refs/audio_candidates_cache.json",
   "output_dir":             "E:/scoring/batches",
 

@@ -17,6 +17,7 @@ env/
 batches/*/batch.h5
 batches/*/export/
 batches/*/sessions/
+batches/*
 results/
 
 #Reference files (these should be copied over but not git)

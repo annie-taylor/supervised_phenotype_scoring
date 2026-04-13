@@ -13,9 +13,10 @@ process (tables / PyTables does not support concurrent writes).
 
 Usage
 -----
+::
+
     python prepare_batch.py --nest-father pk24bu3 --genetic-father wh88br85
-    python prepare_batch.py --nest-father pk24bu3 --genetic-father wh88br85 \\
-        --snippets-per-bird 8 --workers 6
+    python prepare_batch.py --nest-father pk24bu3 --genetic-father wh88br85 --snippets-per-bird 8 --workers 6
 
 Next step: run export_batch.py to generate PNGs and WAVs from the HDF5.
 """
@@ -380,15 +381,16 @@ def write_hdf5(
     """
     Write all successful snippets to batch.h5.
 
-    Layout
-    ------
-    /config          group   attrs: pairing, created, salt, seed, target_sr,
-                                    snippet_duration_s, spectrogram, freq_bins,
-                                    time_bins
-    /freq_axis       Array   (freq_bins,)  Hz
-    /specs           EArray  (n × freq_bins × time_bins)  float32, blosc-5
-    /audio           VLArray float32 rows (one per snippet)
-    /manifest        Table   uid, spec_idx, bird_id, role, …
+    Notes
+    -----
+    HDF5 layout::
+
+        /config      group   attrs: pairing, created, salt, seed, target_sr,
+                             snippet_duration_s, spectrogram, freq_bins, time_bins
+        /freq_axis   Array   (freq_bins,)  Hz
+        /specs       EArray  (n x freq_bins x time_bins)  float32, blosc-5
+        /audio       VLArray float32 rows (one per snippet)
+        /manifest    Table   uid, spec_idx, bird_id, role, ...
 
     Returns the number of snippets written.
     """

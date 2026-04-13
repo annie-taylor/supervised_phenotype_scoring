@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import threading
 import time
 import urllib.request
@@ -38,28 +39,49 @@ import tables
 from flask import (Flask, jsonify, redirect, render_template,
                    request, send_file, session, url_for)
 
+# family_spec_generation lives alongside this script
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import family_spec_generation as fsg
+
 # ── Constants ────────────────────────────────────────────────────────────────────
 
 SCORING_DIR  = Path(__file__).resolve().parent
 SORTABLE_URL = "https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"
 SORTABLE_JS  = SCORING_DIR / "static" / "Sortable.min.js"
+PLOTLY_URL   = "https://cdn.plot.ly/plotly-latest.min.js"
+PLOTLY_JS    = SCORING_DIR / "static" / "plotly.min.js"
+
+# hop / nfft used when computing spectrograms on-demand for the comparison panels.
+# Kept separate from batch config: the HDF5 stores high-res specs (hop=1), but
+# serving ~150 MB of JSON per panel is not feasible — hop=64 gives ~4 000 time
+# columns for an 8-second clip, which is ample for zoom/pan inspection.
+INTERACTIVE_HOP  = 64
+INTERACTIVE_NFFT = 512
 
 TRAITS = ["stereotypy", "repeat_propensity"]
 
 ROLE_ORDER = ["nest_father", "genetic_father", "xf", "hr_nest", "hr_genetic"]
 
-# ── Sortable.js auto-download ────────────────────────────────────────────────────
+# ── Static asset auto-download ───────────────────────────────────────────────────
 
-def ensure_sortable() -> None:
-    if SORTABLE_JS.exists():
+def _ensure_js(path: Path, url: str) -> None:
+    if path.exists():
         return
-    print(f"Downloading Sortable.js from {SORTABLE_URL} ...")
+    print(f"Downloading {path.name} from {url} ...")
     try:
-        urllib.request.urlretrieve(SORTABLE_URL, SORTABLE_JS)
+        urllib.request.urlretrieve(url, path)
         print("  OK")
     except Exception as e:
-        print(f"  WARNING: could not download Sortable.js: {e}")
-        print(f"  Download manually to {SORTABLE_JS}")
+        print(f"  WARNING: could not download {path.name}: {e}")
+        print(f"  Download manually to {path}")
+
+
+def ensure_sortable() -> None:
+    _ensure_js(SORTABLE_JS, SORTABLE_URL)
+
+
+def ensure_plotly() -> None:
+    _ensure_js(PLOTLY_JS, PLOTLY_URL)
 
 
 # ── Batch loading ────────────────────────────────────────────────────────────────
@@ -285,15 +307,17 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
         if not state:
             return jsonify({"error": "session not found"}), 400
 
-        data     = request.get_json()
-        ranking  = data.get("ranking", [])
-        elapsed  = data.get("elapsed_s", None)
+        data      = request.get_json()
+        ranking   = data.get("ranking",  [])
+        flagged   = data.get("flagged",  [])
+        elapsed   = data.get("elapsed_s", None)
         presented = state.get("current_batch", [])
 
         round_record = {
             "round":     len(state["rounds"]) + 1,
             "presented": presented,
             "ranking":   ranking,
+            "flagged":   flagged,
             "elapsed_s": elapsed,
             "timestamp": datetime.now().isoformat(),
         }
@@ -331,6 +355,35 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
                                scorer=scorer, trait=trait,
                                n_rounds=n_rounds, n_songs=n_songs,
                                pairing=f"{nf} × {gf}")
+
+    # ── Interactive spectrogram (for comparison panels) ───────────────────────
+    @app.route("/spec_interactive/<uid>")
+    def spec_interactive(uid: str):
+        """Compute a fresh high-res spectrogram from the exported WAV and return
+        it as JSON {z, x, y} for Plotly.  Uses INTERACTIVE_HOP rather than the
+        batch hop so the payload stays manageable (~3-4 MB for an 8-second clip).
+        """
+        if uid not in batch["uid_meta"]:
+            return "Not found", 404
+        wav_path = batch["export_dir"] / "audio" / f"{uid}.wav"
+        if not wav_path.exists():
+            return "WAV not exported yet — run export_batch.py", 404
+        try:
+            audio, sr = fsg.read_audio_file(str(wav_path))
+            spec, f, t = fsg.make_song_spectrogram(
+                audio.astype(np.float64), sr,
+                nfft=INTERACTIVE_NFFT,
+                hop=INTERACTIVE_HOP,
+                min_freq=400,
+                max_freq=10000,
+            )
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "z": np.round(spec, 3).tolist(),
+            "x": np.round(t,    4).tolist(),
+            "y": np.round(f,    1).tolist(),
+        })
 
     # ── Asset routes ──────────────────────────────────────────────────────────
     @app.route("/spec/<uid>")
@@ -370,6 +423,7 @@ def main() -> None:
     args = parser.parse_args()
 
     ensure_sortable()
+    ensure_plotly()
 
     batch_dir = Path(args.batch_dir).resolve()
     app       = create_app(batch_dir, args.batch_size, args.mode)
