@@ -24,6 +24,7 @@ Next step: run export_batch.py to generate PNGs and WAVs from the HDF5.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import secrets
 import sys
@@ -62,6 +63,26 @@ def load_config(path: Path = DEFAULT_CFG) -> dict:
         "p_low": 2, "p_high": 98,
     })
     return cfg
+
+
+# ── Exclusion list ───────────────────────────────────────────────────────────────
+
+def load_exclude_set(csv_path: Path) -> set[tuple[str, float]]:
+    """
+    Load a set of (source_file, snippet_start_s) pairs to exclude from a
+    prescreen CSV.  Only rows with label ``not_song`` or ``rendering_error``
+    are excluded; ``song`` rows are ignored.
+
+    The start time is rounded to 2 decimal places for robust matching across
+    floating-point representations.
+    """
+    exclude: set[tuple[str, float]] = set()
+    with open(csv_path, newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("label", "not_song") != "song":
+                exclude.add((row["source_file"],
+                             round(float(row["snippet_start_s"]), 2)))
+    return exclude
 
 
 # ── Bird registry ────────────────────────────────────────────────────────────────
@@ -185,11 +206,19 @@ def plan_snippets(
     audio_candidates: dict,
     cfg:              dict,
     rng:              np.random.Generator,
+    exclude_set:      set[tuple[str, float]] | None = None,
 ) -> list[dict]:
     """
     For each bird, allocate up to cfg['snippets_per_bird'] snippet tasks.
     Snippets are distributed across candidate files from largest to smallest;
     multiple snippets may come from the same file if it is long enough.
+
+    Parameters
+    ----------
+    exclude_set : set of (source_file, snippet_start_s) tuples, optional
+        Snippets whose (source_file, round(start_s, 2)) key is present in
+        this set are skipped.  Populated from a prescreen CSV via
+        ``load_exclude_set()``.
 
     Returns a flat list of task dicts (one per snippet, with a fresh UUID each).
     """
@@ -238,6 +267,9 @@ def plan_snippets(
                 continue
 
             for start_s in positions:
+                if exclude_set and (fp, round(start_s, 2)) in exclude_set:
+                    print(f"    excluded: {Path(fp).name} @ {start_s:.2f}s")
+                    continue
                 bird_tasks.append({
                     "uid":           str(uuid.uuid4()),
                     "source_file":   fp,
@@ -495,6 +527,9 @@ def main() -> None:
                         help="Override config snippets_per_bird")
     parser.add_argument("--workers", type=int,
                         help="Override config n_workers")
+    parser.add_argument("--exclude-csv", default=None,
+                        help="Path to a prescreen CSV; snippets labelled "
+                             "not_song or rendering_error are excluded")
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -537,10 +572,17 @@ def main() -> None:
     found = sum(1 for b in registry if b in audio_candidates)
     print(f"  {found}/{len(registry)} birds have audio candidates")
 
+    # ── Load exclusion list ───────────────────────────────────────────────────
+    exclude_set = None
+    if args.exclude_csv:
+        exclude_path = Path(args.exclude_csv)
+        exclude_set  = load_exclude_set(exclude_path)
+        print(f"\nExclusion list: {len(exclude_set)} snippet(s) from {exclude_path.name}")
+
     # ── Plan snippets ─────────────────────────────────────────────────────────
     rng = np.random.default_rng(cfg["seed"])
     print("\nPlanning snippets...")
-    tasks = plan_snippets(registry, audio_candidates, cfg, rng)
+    tasks = plan_snippets(registry, audio_candidates, cfg, rng, exclude_set)
 
     if not tasks:
         print("\nNo snippets could be planned — check audio paths and candidates cache.")

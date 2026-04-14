@@ -12,11 +12,19 @@ See the project README on GitHub for installation, configuration, and step-by-st
 
 .. toctree::
    :maxdepth: 2
+   :caption: User Guide
+
+   usage
+
+.. toctree::
+   :maxdepth: 2
    :caption: API Reference
 
    api/family_spec_generation
    api/prepare_batch
    api/export_batch
+   api/prescreen_app
+   api/run_pipeline
    api/ranking_app
    api/analyze_rankings
    api/printout_generator

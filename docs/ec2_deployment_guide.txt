@@ -173,11 +173,26 @@ Step 19: Start the ranking app in the background                      [EC2]
   To confirm the app is running:                                       [EC2]
     ps aux | grep ranking_app
 
-  To view live app output (requests, errors):                          [EC2]
-    tail -f app.log
-
   To stop the app when scoring is complete:                            [EC2]
     pkill -f ranking_app.py
+
+  Note: Always launch with nohup as shown above. Running without nohup
+  (e.g. just `python ranking_app.py ...`) will kill the app when the SSH
+  session disconnects and will not write an access log.
+
+Step 19a: Monitor and review access logs                              [EC2]
+  Purpose: app.log captures every request with visitor IP, timestamp, and
+           page — useful for confirming scorers have connected and sessions
+           are being submitted.
+
+  Watch requests live:
+    tail -f ~/supervised_phenotype_scoring/app.log
+
+  View full access history:
+    cat ~/supervised_phenotype_scoring/app.log | grep "HTTP/1.1"
+
+  View last 50 lines (errors + requests):
+    tail -50 ~/supervised_phenotype_scoring/app.log
 
 Step 20: Retrieve session files after scoring is complete             [LOCAL]
   Purpose: Downloads JSON ranking records from EC2 for local analysis.
