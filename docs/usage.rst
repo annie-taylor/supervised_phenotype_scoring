@@ -46,6 +46,8 @@ Options:
 - ``--workers N`` — parallel spectrogram workers
 - ``--exclude-csv path/to/prescreen_<date>.csv`` — skip snippets labelled
   ``not_song`` or ``rendering_error`` in a prior prescreen run
+- ``--existing-batch path/to/batch.h5`` — carry over valid snippets from a
+  prior run and only compute the shortfall per bird (use with ``--exclude-csv``)
 
 Step 2 — Export spectrograms and audio
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -82,19 +84,33 @@ Open ``http://localhost:5001`` in a browser.  For each spectrogram press:
 Labels are saved to ``batches/.../prescreen_<YYYYMMDD>.csv`` after each
 decision.  Close the browser and restart to resume mid-session.
 
-Step 4 — Rebuild excluding non-song snippets
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Step 4 — Rebuild excluding non-song snippets, topping up where possible
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Pass both ``--exclude-csv`` and ``--existing-batch`` so the script carries
+over valid snippets from the Phase 1 batch and only recomputes the shortfall.
 
 .. code-block:: bash
 
     python prepare_batch.py --nest-father pk24bu3 --genetic-father wh88br85 \
-        --exclude-csv batches/pk24bu3_wh88br85_20260414/prescreen_20260414.csv
+        --exclude-csv batches/pk24bu3_wh88br85_20260414/prescreen_20260414.csv \
+        --existing-batch batches/pk24bu3_wh88br85_20260414/batch.h5
+
+What this does:
+
+- Loads all valid (non-excluded) snippets from the existing HDF5 — no recomputation
+- For each bird below the target count, samples additional positions from
+  audio files, respecting the min-gap constraint against existing positions
+- Writes a new HDF5 combining carried-over and newly computed snippets
 
 Then re-export the cleaned batch:
 
 .. code-block:: bash
 
     python export_batch.py batches/pk24bu3_wh88br85_20260414 --force
+
+When using ``run_pipeline.py --phase 2``, the ``--existing-batch`` flag is
+passed automatically — no manual intervention needed.
 
 Step 5 — Run the scoring app
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

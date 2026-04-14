@@ -75,15 +75,17 @@ def load_existing_batch(
     Load valid snippets from an existing batch.h5, filtering out any whose
     (source_file, snippet_start_s) key is in *exclude_set*.
 
-    Returns a dict with:
+    Returns
+    -------
+    dict with keys:
 
-    valid_rows : list of manifest-row dicts for kept snippets
-    valid_specs : {uid: spec ndarray}  float32 (freq_bins × time_bins)
-    valid_audio : {uid: audio ndarray} float32
-    freq_axis   : ndarray (Hz)
-    existing_positions : set of (source_file, round(start_s, 2)) for *all*
-                         existing snippets (used to avoid re-sampling them)
-    per_bird_valid : {bird_id: count} of valid (non-excluded) snippets
+    - ``valid_rows`` — list of manifest-row dicts for kept snippets
+    - ``valid_specs`` — ``{uid: spec ndarray}`` float32 (freq_bins × time_bins)
+    - ``valid_audio`` — ``{uid: audio ndarray}`` float32
+    - ``freq_axis`` — ndarray (Hz)
+    - ``existing_positions`` — set of (source_file, round(start_s, 2)) for
+      *all* existing snippets (used to avoid re-sampling them)
+    - ``per_bird_valid`` — ``{bird_id: count}`` of valid (non-excluded) snippets
     """
     valid_rows: list[dict]        = []
     valid_specs: dict             = {}

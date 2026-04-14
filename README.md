@@ -46,9 +46,9 @@ conda activate supervised_phenotype_scoring
 ```
 
 This installs Python 3.11 plus all required packages.
-The `evfuncs` pip package is optional and only needed if your audio files are
-in `.cbin` format.  The `boto3` package is only needed for S3 upload
-(`upload_batch.py`).
+`.cbin` audio support is provided by `tools/evfuncs.py` (a local copy
+included in the repo) — no separate install needed.  The `boto3` package is
+only needed for S3 upload (`upload_batch.py`).
 
 ### Verify the install
 
@@ -213,13 +213,18 @@ Open `http://localhost:5001/`.  For each spectrogram press **S** (song),
 **N** (not song), or **E** (rendering error).  Labels are saved to
 `batches/.../prescreen_<date>.csv`.  Resume at any time by restarting.
 
-#### 4. Rebuild excluding non-song snippets
+#### 4. Rebuild excluding non-song snippets, topping up where possible
 
 ```bash
 python prepare_batch.py --nest-father pk24bu3 --genetic-father wh88br85 \
-    --exclude-csv batches/pk24bu3_wh88br85_20260414/prescreen_20260414.csv
+    --exclude-csv batches/pk24bu3_wh88br85_20260414/prescreen_20260414.csv \
+    --existing-batch batches/pk24bu3_wh88br85_20260414/batch.h5
 python export_batch.py batches/pk24bu3_wh88br85_20260414 --force
 ```
+
+`--existing-batch` carries over valid snippets from the Phase 1 HDF5 without
+recomputing them, and samples new positions only for birds below the target
+count.  `run_pipeline.py --phase 2` passes this flag automatically.
 
 #### 5. Run the scoring app
 
