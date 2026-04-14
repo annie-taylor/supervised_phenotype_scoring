@@ -67,6 +67,69 @@ def load_config(path: Path = DEFAULT_CFG) -> dict:
 
 # ── Exclusion list ───────────────────────────────────────────────────────────────
 
+def load_existing_batch(
+    h5_path: Path,
+    exclude_set: set[tuple[str, float]],
+) -> dict:
+    """
+    Load valid snippets from an existing batch.h5, filtering out any whose
+    (source_file, snippet_start_s) key is in *exclude_set*.
+
+    Returns a dict with:
+
+    valid_rows : list of manifest-row dicts for kept snippets
+    valid_specs : {uid: spec ndarray}  float32 (freq_bins × time_bins)
+    valid_audio : {uid: audio ndarray} float32
+    freq_axis   : ndarray (Hz)
+    existing_positions : set of (source_file, round(start_s, 2)) for *all*
+                         existing snippets (used to avoid re-sampling them)
+    per_bird_valid : {bird_id: count} of valid (non-excluded) snippets
+    """
+    valid_rows: list[dict]        = []
+    valid_specs: dict             = {}
+    valid_audio: dict             = {}
+    existing_positions: set       = set()
+    per_bird_valid: dict[str,int] = {}
+
+    with tables.open_file(str(h5_path), mode="r") as h5:
+        freq_axis = h5.root.freq_axis[:]
+        for row in h5.root.manifest.iterrows():
+            uid         = row["uid"].decode()
+            source_file = row["source_file"].decode()
+            start_s     = float(row["snippet_start_s"])
+            bird_id     = row["bird_id"].decode()
+            spec_idx    = int(row["spec_idx"])
+            pos_key     = (source_file, round(start_s, 2))
+
+            existing_positions.add(pos_key)
+
+            if pos_key in exclude_set:
+                continue   # excluded by prescreen
+
+            valid_rows.append({
+                "uid":           uid,
+                "source_file":   source_file,
+                "start_s":       start_s,
+                "duration_s":    float(row["snippet_duration_s"]),
+                "bird_id":       bird_id,
+                "role":          row["role"].decode(),
+                "nest_father":   row["nest_father"].decode(),
+                "genetic_father": row["genetic_father"].decode(),
+            })
+            valid_specs[uid] = h5.root.specs[spec_idx].copy()
+            valid_audio[uid] = h5.root.audio[spec_idx].copy()
+            per_bird_valid[bird_id] = per_bird_valid.get(bird_id, 0) + 1
+
+    return {
+        "valid_rows":         valid_rows,
+        "valid_specs":        valid_specs,
+        "valid_audio":        valid_audio,
+        "freq_axis":          freq_axis,
+        "existing_positions": existing_positions,
+        "per_bird_valid":     per_bird_valid,
+    }
+
+
 def load_exclude_set(csv_path: Path) -> set[tuple[str, float]]:
     """
     Load a set of (source_file, snippet_start_s) pairs to exclude from a
@@ -178,35 +241,47 @@ def _sample_positions(
     min_gap_s: float,
     edge_s: float,
     rng: np.random.Generator,
+    occupied: list[float] | None = None,
 ) -> list[float]:
     """
     Sample up to n non-overlapping start positions from a single recording.
     Positions are drawn uniformly from [edge_s, duration_s - snippet_s - edge_s]
     with a minimum separation of  min_gap_s + snippet_s  between starts
     (so snippets don't overlap and have breathing room between them).
+
+    Parameters
+    ----------
+    occupied : list of float, optional
+        Start positions already used in this file (from a prior batch run).
+        New positions will respect the same min-separation constraint against
+        these, but the occupied positions themselves are not returned.
     """
     lo = edge_s
     hi = duration_s - snippet_s - edge_s
     if hi <= lo:
         return []
 
-    min_sep = snippet_s + min_gap_s
+    min_sep   = snippet_s + min_gap_s
+    taken     = list(occupied) if occupied else []   # constraints only
     positions: list[float] = []
+
     for _ in range(n):
-        for _ in range(100):   # max attempts per position
+        for _ in range(200):   # more attempts when there are existing constraints
             pos = rng.uniform(lo, hi)
-            if all(abs(pos - p) >= min_sep for p in positions):
+            if all(abs(pos - p) >= min_sep for p in taken + positions):
                 positions.append(pos)
                 break
     return sorted(positions)
 
 
 def plan_snippets(
-    registry:         dict,
-    audio_candidates: dict,
-    cfg:              dict,
-    rng:              np.random.Generator,
-    exclude_set:      set[tuple[str, float]] | None = None,
+    registry:             dict,
+    audio_candidates:     dict,
+    cfg:                  dict,
+    rng:                  np.random.Generator,
+    exclude_set:          set[tuple[str, float]] | None = None,
+    per_bird_existing:    dict[str, int] | None = None,
+    existing_positions:   set[tuple[str, float]] | None = None,
 ) -> list[dict]:
     """
     For each bird, allocate up to cfg['snippets_per_bird'] snippet tasks.
@@ -219,6 +294,12 @@ def plan_snippets(
         Snippets whose (source_file, round(start_s, 2)) key is present in
         this set are skipped.  Populated from a prescreen CSV via
         ``load_exclude_set()``.
+    per_bird_existing : dict {bird_id: count}, optional
+        Number of valid snippets already in the batch for each bird.  Only
+        the shortfall up to ``cfg['snippets_per_bird']`` is planned.
+    existing_positions : set of (source_file, round(start_s, 2)), optional
+        All positions already present in the batch (valid + excluded).  New
+        positions will respect the min-gap constraint against these.
 
     Returns a flat list of task dicts (one per snippet, with a fresh UUID each).
     """
@@ -233,6 +314,12 @@ def plan_snippets(
     all_tasks: list[dict] = []
 
     for bird, meta in registry.items():
+        already_have = (per_bird_existing or {}).get(bird, 0)
+        shortfall    = N - already_have
+        if shortfall <= 0:
+            print(f"  {bird} ({meta['role']}): {already_have} snippets already in batch — skipping")
+            continue
+
         candidates = audio_candidates.get(bird, [])
         existing   = [c for c in candidates if Path(c["filepath"]).exists()]
         if not existing:
@@ -243,7 +330,7 @@ def plan_snippets(
         existing.sort(key=lambda c: c.get("size_mb", 0), reverse=True)
 
         bird_tasks: list[dict] = []
-        remaining = N
+        remaining = shortfall
 
         for cand in existing:
             if remaining <= 0:
@@ -262,7 +349,18 @@ def plan_snippets(
             max_from_file = max(1, int((file_dur - dur - 2 * edge) / (dur + gap)) + 1)
             n_this        = min(remaining, max_from_file)
 
-            positions = _sample_positions(file_dur, dur, n_this, gap, edge, rng)
+            # Collect positions from this file already in the batch
+            occupied = [
+                start for (src, start) in (existing_positions or set())
+                if src == fp
+            ] if existing_positions else []
+            # Round occupied to match the precision used in existing_positions
+            occupied_starts = [
+                s for (src, s) in (existing_positions or set()) if src == fp
+            ]
+            positions = _sample_positions(
+                file_dur, dur, n_this, gap, edge, rng, occupied=occupied_starts
+            )
             if not positions:
                 continue
 
@@ -403,12 +501,13 @@ class _ManifestRow(tables.IsDescription):
 # ── HDF5 writer ──────────────────────────────────────────────────────────────────
 
 def write_hdf5(
-    h5_path:  Path,
-    tasks:    list[dict],
-    results:  dict,          # uid → compute_snippet output
-    cfg:      dict,
-    pairing:  dict,
-    salt:     str,
+    h5_path:       Path,
+    tasks:         list[dict],
+    results:       dict,          # uid → compute_snippet output
+    cfg:           dict,
+    pairing:       dict,
+    salt:          str,
+    existing_data: dict | None = None,  # from load_existing_batch
 ) -> int:
     """
     Write all successful snippets to batch.h5.
@@ -427,12 +526,22 @@ def write_hdf5(
     Returns the number of snippets written.
     """
     good = [r for r in results.values() if not r.get("error")]
-    if not good:
+    n_existing = len(existing_data["valid_rows"]) if existing_data else 0
+
+    if not good and n_existing == 0:
         raise RuntimeError("No successful snippets — nothing to write.")
 
-    ref       = good[0]
-    freq_bins, time_bins = ref["spec"].shape
-    n_total   = len(good)
+    # Determine shape from first available spec
+    if existing_data and existing_data["valid_rows"]:
+        first_uid  = existing_data["valid_rows"][0]["uid"]
+        ref_spec   = existing_data["valid_specs"][first_uid]
+        ref_freq   = existing_data["freq_axis"]
+    else:
+        ref_spec = good[0]["spec"]
+        ref_freq = good[0]["f"]
+
+    freq_bins, time_bins = ref_spec.shape
+    n_total   = n_existing + len(good)
     blosc     = tables.Filters(complevel=5, complib="blosc")
 
     with tables.open_file(str(h5_path), mode="w", title="scoring_batch") as h5:
@@ -450,7 +559,7 @@ def write_hdf5(
         grp._v_attrs["time_bins"]          = time_bins
 
         # ── Shared frequency axis ────────────────────────────────────────────
-        h5.create_array("/", "freq_axis", ref["f"],
+        h5.create_array("/", "freq_axis", ref_freq,
                         title="Frequency axis (Hz)")
 
         # ── Spectrogram EArray ───────────────────────────────────────────────
@@ -483,25 +592,46 @@ def write_hdf5(
         mrow     = manifest.row
         spec_idx = 0
 
-        # Write in task order so spec_idx stays consistent
-        uid_to_task = {t["uid"]: t for t in tasks}
+        # ── Write existing valid snippets first ──────────────────────────────
+        if existing_data:
+            for row in existing_data["valid_rows"]:
+                uid  = row["uid"]
+                spec = existing_data["valid_specs"][uid]
+                audio = existing_data["valid_audio"][uid]
+
+                specs.append(spec[np.newaxis])
+                audio_vl.append(audio)
+
+                mrow["uid"]                = uid
+                mrow["spec_idx"]           = spec_idx
+                mrow["bird_id"]            = row["bird_id"]
+                mrow["role"]               = row["role"]
+                mrow["nest_father"]        = row["nest_father"]
+                mrow["genetic_father"]     = row["genetic_father"]
+                mrow["source_file"]        = row["source_file"]
+                mrow["snippet_start_s"]    = row["start_s"]
+                mrow["snippet_duration_s"] = row["duration_s"]
+                mrow.append()
+                spec_idx += 1
+
+        # ── Write newly computed snippets ────────────────────────────────────
         for task in tasks:
             uid = task["uid"]
             res = results.get(uid)
             if res is None or res.get("error"):
                 continue
 
-            specs.append(res["spec"][np.newaxis])   # (1, freq, time) → appended
+            specs.append(res["spec"][np.newaxis])
             audio_vl.append(res["audio"])
 
-            mrow["uid"]               = uid
-            mrow["spec_idx"]          = spec_idx
-            mrow["bird_id"]           = task["bird_id"]
-            mrow["role"]              = task["role"]
-            mrow["nest_father"]       = task["nest_father"]
-            mrow["genetic_father"]    = task["genetic_father"]
-            mrow["source_file"]       = task["source_file"]
-            mrow["snippet_start_s"]   = task["start_s"]
+            mrow["uid"]                = uid
+            mrow["spec_idx"]           = spec_idx
+            mrow["bird_id"]            = task["bird_id"]
+            mrow["role"]               = task["role"]
+            mrow["nest_father"]        = task["nest_father"]
+            mrow["genetic_father"]     = task["genetic_father"]
+            mrow["source_file"]        = task["source_file"]
+            mrow["snippet_start_s"]    = task["start_s"]
             mrow["snippet_duration_s"] = task["duration_s"]
             mrow.append()
             spec_idx += 1
@@ -530,6 +660,10 @@ def main() -> None:
     parser.add_argument("--exclude-csv", default=None,
                         help="Path to a prescreen CSV; snippets labelled "
                              "not_song or rendering_error are excluded")
+    parser.add_argument("--existing-batch", default=None,
+                        help="Path to an existing batch.h5; valid snippets "
+                             "are carried over and only the shortfall is "
+                             "recomputed (use with --exclude-csv)")
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -579,16 +713,38 @@ def main() -> None:
         exclude_set  = load_exclude_set(exclude_path)
         print(f"\nExclusion list: {len(exclude_set)} snippet(s) from {exclude_path.name}")
 
+    # ── Load existing batch (top-up mode) ────────────────────────────────────
+    existing_data = None
+    if args.existing_batch:
+        existing_h5 = Path(args.existing_batch)
+        if not existing_h5.exists():
+            print(f"WARNING: --existing-batch not found: {existing_h5} — ignoring")
+        else:
+            existing_data = load_existing_batch(existing_h5, exclude_set or set())
+            n_valid = len(existing_data["valid_rows"])
+            n_excl  = len(existing_data["existing_positions"]) - n_valid
+            print(f"\nExisting batch: {n_valid} valid snippet(s) kept, "
+                  f"{n_excl} excluded")
+            for bird, count in existing_data["per_bird_valid"].items():
+                print(f"  {bird}: {count} existing")
+
     # ── Plan snippets ─────────────────────────────────────────────────────────
     rng = np.random.default_rng(cfg["seed"])
     print("\nPlanning snippets...")
-    tasks = plan_snippets(registry, audio_candidates, cfg, rng, exclude_set)
+    tasks = plan_snippets(
+        registry, audio_candidates, cfg, rng,
+        exclude_set=exclude_set,
+        per_bird_existing=existing_data["per_bird_valid"] if existing_data else None,
+        existing_positions=existing_data["existing_positions"] if existing_data else None,
+    )
 
-    if not tasks:
+    if not tasks and not existing_data:
         print("\nNo snippets could be planned — check audio paths and candidates cache.")
         return
 
-    print(f"\n{len(tasks)} snippet tasks planned.")
+    print(f"\n{len(tasks)} new snippet task(s) planned"
+          + (f" + {len(existing_data['valid_rows'])} carried over from existing batch"
+             if existing_data else "") + ".")
 
     # ── Compute spectrograms (parallel) ───────────────────────────────────────
     print(f"\nComputing spectrograms ({cfg['n_workers']} workers)...")
@@ -616,7 +772,8 @@ def main() -> None:
 
     # ── Write HDF5 ────────────────────────────────────────────────────────────
     print(f"\nWriting {h5_path} ...")
-    n_written = write_hdf5(h5_path, tasks, results, cfg, pairing, salt)
+    n_written = write_hdf5(h5_path, tasks, results, cfg, pairing, salt,
+                           existing_data=existing_data)
 
     # ── Public batch index (no bird identity) ─────────────────────────────────
     index = {

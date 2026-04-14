@@ -188,10 +188,11 @@ def phase2(pairings: list[tuple[str, str]], args: argparse.Namespace,
 
         print(f"  prescreen CSV: {prescreen_csv.name}")
 
-        # prepare_batch.py --exclude-csv
+        # prepare_batch.py --exclude-csv --existing-batch
         cmd = [sys.executable, "prepare_batch.py",
                "--nest-father", nf, "--genetic-father", gf,
-               "--exclude-csv", str(prescreen_csv)]
+               "--exclude-csv", str(prescreen_csv),
+               "--existing-batch", str(phase1_dir / "batch.h5")]
         if args.snippets_per_bird:
             cmd += ["--snippets-per-bird", str(args.snippets_per_bird)]
         if args.workers:
