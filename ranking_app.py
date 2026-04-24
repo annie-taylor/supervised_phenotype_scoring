@@ -478,6 +478,7 @@ def main() -> None:
         batch_dirs = sorted(
             d for d in (SCORING_DIR / "batches").iterdir()
             if d.is_dir()
+            and d.name != "archive"
             and (d / "batch.h5").exists()
             and (d / "export" / "spectrograms").exists()
         )

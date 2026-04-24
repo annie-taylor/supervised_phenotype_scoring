@@ -67,7 +67,7 @@ def discover_batches(batches_root: Path) -> list[Path]:
     """Return all batch dirs under batches_root that have a prescreen CSV."""
     return [
         d for d in sorted(batches_root.iterdir())
-        if d.is_dir() and find_prescreen_csv(d) is not None
+        if d.is_dir() and d.name != "archive" and find_prescreen_csv(d) is not None
     ]
 
 
