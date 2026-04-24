@@ -59,6 +59,26 @@
       <input type="text" id="scorer" name="scorer"
              placeholder="e.g. Annie" autocomplete="off" required>
 
+      <label>Scoring mode</label>
+      <div style="margin-bottom:20px">
+        <label style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;cursor:pointer">
+          <input type="radio" name="scoring_mode" value="all" checked
+                 style="width:auto;margin:3px 0 0">
+          <span>
+            <strong style="color:#e0e0e0">All birds</strong><br>
+            <span style="color:#555;font-size:0.8em">Includes hr_genetic (different tutor)</span>
+          </span>
+        </label>
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+          <input type="radio" name="scoring_mode" value="same_tutor"
+                 style="width:auto;margin:3px 0 0">
+          <span>
+            <strong style="color:#e0e0e0">Same-tutor comparison</strong><br>
+            <span style="color:#555;font-size:0.8em">Excludes hr_genetic; genetic father kept as reference</span>
+          </span>
+        </label>
+      </div>
+
       <label for="trait">Trait to score</label>
       <select id="trait" name="trait" onchange="updateDesc()">
         {% for t in traits %}

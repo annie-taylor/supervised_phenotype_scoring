@@ -62,6 +62,14 @@ TRAITS = ["stereotypy", "repeat_propensity"]
 
 ROLE_ORDER = ["nest_father", "genetic_father", "xf", "hr_nest", "hr_genetic"]
 
+# Roles excluded in same-tutor mode (birds that heard a different tutor song)
+SAME_TUTOR_EXCLUDE = frozenset({"hr_genetic"})
+
+SCORING_MODES = {
+    "all":         "All birds",
+    "same_tutor":  "Same-tutor comparison (excludes hr_genetic)",
+}
+
 # ── Static asset auto-download ───────────────────────────────────────────────────
 
 def _ensure_js(path: Path, url: str) -> None:
@@ -129,18 +137,24 @@ def load_batch(batch_dir: Path) -> dict:
 
 # ── Session pool builder ─────────────────────────────────────────────────────────
 
-def build_session_pool(uid_meta: dict, batch_size: int, seed: int) -> list[str]:
+def build_session_pool(uid_meta: dict, batch_size: int, seed: int,
+                       scoring_mode: str = "all") -> list[str]:
     """
     Create a shuffled pool of UIDs arranged so that consecutive windows of
     batch_size contain songs from varied roles.
 
     Strategy: interleave by role (round-robin), which guarantees that any
     consecutive window of len(ROLE_ORDER) items spans all present roles.
+    In ``same_tutor`` mode, roles in SAME_TUTOR_EXCLUDE are omitted from
+    the pool so only birds that heard the same tutor are compared.
     """
+    exclude = SAME_TUTOR_EXCLUDE if scoring_mode == "same_tutor" else frozenset()
     rng    = np.random.default_rng(seed)
     by_role: dict[str, list] = {r: [] for r in ROLE_ORDER}
     for uid, meta in uid_meta.items():
         role = meta["role"]
+        if role in exclude:
+            continue
         if role in by_role:
             by_role[role].append(uid)
         else:
@@ -171,24 +185,25 @@ _lock = threading.Lock()
 
 
 def new_scoring_session(scorer: str, trait: str, batch: dict,
-                        batch_size: int) -> str:
+                        batch_size: int, scoring_mode: str = "all") -> str:
     """Create a new scoring session, return its sid."""
     sid  = str(uuid.uuid4())
     seed = int(time.time() * 1000) % (2**31)
-    pool = build_session_pool(batch["uid_meta"], batch_size, seed)
+    pool = build_session_pool(batch["uid_meta"], batch_size, seed, scoring_mode)
 
     state = {
-        "sid":        sid,
-        "scorer":     scorer,
-        "trait":      trait,
-        "platform":   "local",
-        "batch_id":   batch["h5_path"].parent.name,
-        "pairing":    batch["pairing"],
-        "started":    datetime.now().isoformat(),
-        "pool":       pool,
-        "pool_pos":   0,
-        "batch_size": batch_size,
-        "rounds":     [],
+        "sid":          sid,
+        "scorer":       scorer,
+        "trait":        trait,
+        "scoring_mode": scoring_mode,
+        "platform":     "local",
+        "batch_id":     batch["h5_path"].parent.name,
+        "pairing":      batch["pairing"],
+        "started":      datetime.now().isoformat(),
+        "pool":         pool,
+        "pool_pos":     0,
+        "batch_size":   batch_size,
+        "rounds":       [],
     }
     with _lock:
         _sessions[sid] = state
@@ -201,12 +216,13 @@ def get_session(sid: str) -> dict | None:
 
 
 def save_session_to_disk(state: dict, sessions_dir: Path) -> None:
-    """Append-write session JSON after each round."""
+    """Write session JSON after each round, into a scoring-mode subdirectory."""
+    mode_dir = sessions_dir / state.get("scoring_mode", "all")
+    mode_dir.mkdir(exist_ok=True)
     fname = (f"{state['scorer']}_{state['trait']}_"
              f"{state['started'][:10]}.json")
-    # Replace chars invalid in filenames
     fname = fname.replace(":", "-").replace(" ", "_")
-    out   = sessions_dir / fname
+    out   = mode_dir / fname
     with open(out, "w") as f:
         # Write only the serialisable subset (no pool — too large)
         payload = {k: v for k, v in state.items() if k != "pool"}
@@ -272,13 +288,17 @@ def create_app(batches: dict[str, dict], batch_size: int, cfg_mode: str) -> Flas
         trait      = request.form.get("trait", "").strip()
         batch_name = request.form.get("batch", "").strip()
 
+        scoring_mode = request.form.get("scoring_mode", "all")
+        if scoring_mode not in SCORING_MODES:
+            scoring_mode = "all"
+
         if not scorer or batch_name not in batches:
             return redirect(url_for("index"))
         if trait not in TRAITS:
             trait = TRAITS[0]
 
         batch = batches[batch_name]
-        sid   = new_scoring_session(scorer, trait, batch, batch_size)
+        sid   = new_scoring_session(scorer, trait, batch, batch_size, scoring_mode)
         session["sid"] = sid
 
         state = get_session(sid)
@@ -313,6 +333,7 @@ def create_app(batches: dict[str, dict], batch_size: int, cfg_mode: str) -> Flas
             completed=done_so_far,
             total=total,
             pairing=state["batch_label"],
+            scoring_mode=state.get("scoring_mode", "all"),
         )
 
     # ── Submit ranking ────────────────────────────────────────────────────────

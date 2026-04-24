@@ -425,9 +425,11 @@ def analyze_one_trait(
     k:            float,
     min_rounds:   int,
     results_dir:  Path,
+    scoring_mode: str | None = None,
 ) -> None:
     batch_id     = batch_dir.name
-    sessions_dir = batch_dir / "sessions"
+    sessions_dir = (batch_dir / "sessions" / scoring_mode
+                    if scoring_mode else batch_dir / "sessions")
 
     print(f"\n── {trait} ──")
     sessions = load_sessions(sessions_dir, trait=trait)
@@ -500,6 +502,10 @@ def main() -> None:
                         help="Warn if a scorer has fewer than this many rounds")
     parser.add_argument("--output-dir", default=None,
                         help="Override output directory (default: batch_dir/../results/)")
+    parser.add_argument("--scoring-mode", default=None,
+                        choices=["all", "same_tutor"],
+                        help="Load sessions from sessions/<mode>/ subdirectory. "
+                             "Omit to load from sessions/ root (legacy behaviour).")
     args = parser.parse_args()
 
     batch_dir = Path(args.batch_dir).resolve()
@@ -537,13 +543,14 @@ def main() -> None:
 
     for trait in traits:
         analyze_one_trait(
-            batch_dir  = batch_dir,
-            trait      = trait,
-            uid_meta   = uid_meta,
-            pairing    = pairing,
-            k          = args.k,
-            min_rounds = args.min_rounds,
-            results_dir = results_dir,
+            batch_dir    = batch_dir,
+            trait        = trait,
+            uid_meta     = uid_meta,
+            pairing      = pairing,
+            k            = args.k,
+            min_rounds   = args.min_rounds,
+            results_dir  = results_dir,
+            scoring_mode = args.scoring_mode,
         )
 
     print(f"\nDone. Results in: {results_dir}")
