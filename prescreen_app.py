@@ -104,25 +104,25 @@ def load_existing_labels(csv_path: Path) -> dict[str, str]:
     return labels
 
 
-def append_label(csv_path: Path, uid: str, meta: dict, label: str) -> None:
-    """Append one row to the prescreen CSV, creating headers if needed."""
-    write_header = not csv_path.exists()
-    with open(csv_path, "a", newline="") as f:
+def write_labels_csv(csv_path: Path, labels: dict[str, str], uid_meta: dict) -> None:
+    """Rewrite the entire prescreen CSV from the current labels dict."""
+    with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
             f,
             fieldnames=["uid", "bird_id", "role",
                         "source_file", "snippet_start_s", "label"],
         )
-        if write_header:
-            writer.writeheader()
-        writer.writerow({
-            "uid":              uid,
-            "bird_id":          meta["bird_id"],
-            "role":             meta["role"],
-            "source_file":      meta["source_file"],
-            "snippet_start_s":  meta["snippet_start_s"],
-            "label":            label,
-        })
+        writer.writeheader()
+        for uid, label in labels.items():
+            meta = uid_meta[uid]
+            writer.writerow({
+                "uid":             uid,
+                "bird_id":         meta["bird_id"],
+                "role":            meta["role"],
+                "source_file":     meta["source_file"],
+                "snippet_start_s": meta["snippet_start_s"],
+                "label":           label,
+            })
 
 
 # ── Spectrogram data route ────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ def read_spec_from_h5(batch: dict, uid: str) -> dict:
 
     return {
         "z": np.round(spec_ds, 4).tolist(),
-        "x": np.round(t, 4),
+        "x": np.round(t, 4).tolist(),
         "y": np.round(freq, 1).tolist(),
     }
 
@@ -162,34 +162,51 @@ def create_app(batch_dir: Path) -> Flask:
     batch    = load_batch(batch_dir)
     csv_path = prescreen_csv_path(batch_dir)
 
-    # Build ordered list of UIDs to review, skipping already-labelled ones
+    all_uids = batch["uids"]
     existing = load_existing_labels(csv_path)
-    pending  = [u for u in batch["uids"] if u not in existing]
+
+    # Start cursor at the first unlabeled snippet
+    first_unlabeled = next(
+        (i for i, u in enumerate(all_uids) if u not in existing),
+        len(all_uids) - 1,
+    )
 
     # Mutable state — single-user app, no locking needed
     state = {
-        "pending":  pending,
-        "done":     len(existing),
-        "total":    len(batch["uids"]),
-        "skipped":  set(existing.keys()),
+        "all_uids": all_uids,
+        "cursor":   first_unlabeled,
+        "labels":   dict(existing),       # {uid: label} — updated on every submission
+        "total":    len(all_uids),
     }
 
     @app.route("/")
     def index():
-        if not state["pending"]:
-            return redirect(url_for("done"))
-        uid  = state["pending"][0]
-        meta = batch["uid_meta"][uid]
+        cursor = state["cursor"]
+        uid    = state["all_uids"][cursor]
+        meta   = batch["uid_meta"][uid]
         return render_template(
             "prescreen.html",
             uid=uid,
             uid_short=uid[:8] + "…",
-            done=state["done"],
+            done=len(state["labels"]),
             total=state["total"],
             source_file=Path(meta["source_file"]).name,
             snippet_start_s=round(meta["snippet_start_s"], 2),
             role=meta["role"],
+            cursor=cursor,
+            has_prev=cursor > 0,
+            has_next=cursor < state["total"] - 1,
+            current_label=state["labels"].get(uid),
         )
+
+    @app.route("/goto")
+    def goto():
+        try:
+            idx = int(request.args.get("idx", state["cursor"]))
+        except ValueError:
+            idx = state["cursor"]
+        state["cursor"] = max(0, min(idx, state["total"] - 1))
+        return redirect(url_for("index"))
 
     @app.route("/spec_data/<uid>")
     def spec_data(uid: str):
@@ -211,17 +228,14 @@ def create_app(batch_dir: Path) -> Flask:
         if uid not in batch["uid_meta"] or lbl not in valid:
             return jsonify({"error": "invalid"}), 400
 
-        # Guard against double-submit
-        if uid in state["skipped"]:
-            return jsonify({"ok": True})
+        state["labels"][uid] = lbl
+        write_labels_csv(csv_path, state["labels"], batch["uid_meta"])
 
-        append_label(csv_path, uid, batch["uid_meta"][uid], lbl)
-        state["skipped"].add(uid)
-        if state["pending"] and state["pending"][0] == uid:
-            state["pending"].pop(0)
-        state["done"] += 1
+        # Advance cursor to next snippet (or stay at end)
+        state["cursor"] = min(state["cursor"] + 1, state["total"] - 1)
 
-        return jsonify({"ok": True, "remaining": len(state["pending"])})
+        remaining = sum(1 for u in state["all_uids"] if u not in state["labels"])
+        return jsonify({"ok": True, "remaining": remaining})
 
     @app.route("/done")
     def done():

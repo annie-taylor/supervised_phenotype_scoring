@@ -47,6 +47,26 @@
     }
     #plot { width: 100%; }
 
+    /* ── Navigation ── */
+    .nav-row {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    .btn-nav {
+      background: #1e1e1e; border: 1px solid #333; border-radius: 6px;
+      color: #888; font-family: monospace; font-size: 0.85em;
+      padding: 6px 14px; cursor: pointer; transition: background 0.1s, color 0.1s;
+    }
+    .btn-nav:hover:not(:disabled) { background: #2a2a2a; color: #ccc; }
+    .btn-nav:disabled { opacity: 0.25; cursor: default; }
+    .current-label-badge {
+      font-size: 0.78em; padding: 3px 10px; border-radius: 12px; font-weight: bold;
+    }
+    .badge-song            { background: #0d2b0d; color: #4caf50; }
+    .badge-not_song        { background: #2b1a0d; color: #ff9800; }
+    .badge-rendering_error { background: #2b0d0d; color: #f44336; }
+    .badge-unlabeled       { background: #1e1e1e; color: #555; }
+
     /* ── Label buttons ── */
     .label-buttons {
       display: flex; gap: 12px; margin-bottom: 18px;
@@ -110,7 +130,24 @@
     <strong>Song</strong> <kbd>S</kbd> &nbsp;·&nbsp;
     <strong>Not song</strong> <kbd>N</kbd> &nbsp;·&nbsp;
     <strong>Rendering error</strong> <kbd>E</kbd>
-    &nbsp;— the next spectrogram loads automatically.
+    &nbsp;·&nbsp; navigate <kbd>←</kbd> <kbd>→</kbd>
+    &nbsp;— re-labeling a snippet overwrites the previous label.
+  </div>
+
+  <div class="nav-row">
+    <button class="btn-nav" id="btn-prev"
+            onclick="navigate({{ cursor }} - 1)"
+            {% if not has_prev %}disabled{% endif %}>← prev</button>
+    {% if current_label %}
+      <span class="current-label-badge badge-{{ current_label }}">
+        {{ current_label.replace('_', ' ') }}
+      </span>
+    {% else %}
+      <span class="current-label-badge badge-unlabeled">unlabeled</span>
+    {% endif %}
+    <button class="btn-nav" id="btn-next"
+            onclick="navigate({{ cursor }} + 1)"
+            {% if not has_next %}disabled{% endif %}>next →</button>
   </div>
 
   <div class="snippet-meta">
@@ -235,9 +272,17 @@
       });
     }
 
+    // ── Navigation ───────────────────────────────────────────────────────
+    function navigate(idx) {
+      window.location.href = '/goto?idx=' + idx;
+    }
+
     // ── Keyboard shortcuts ────────────────────────────────────────────────
     document.addEventListener('keydown', function(e) {
-      if (e.repeat || _submitted) return;
+      if (e.repeat) return;
+      if (e.key === 'ArrowLeft')  { navigate({{ cursor }} - 1); return; }
+      if (e.key === 'ArrowRight') { navigate({{ cursor }} + 1); return; }
+      if (_submitted) return;
       if (e.key === 's' || e.key === 'S') submitLabel('song');
       if (e.key === 'n' || e.key === 'N') submitLabel('not_song');
       if (e.key === 'e' || e.key === 'E') submitLabel('rendering_error');

@@ -35,11 +35,12 @@
       <span class="path">{{ csv_path }}</span>
     </p>
     <div class="hint">
-      To exclude non-song snippets from future batches, pass the prescreen CSV
-      to <code>prepare_batch.py</code> using <code>--exclude-csv</code>
-      (not yet implemented — planned feature).<br><br>
-      To review labels: open the CSV in Excel or run<br>
-      <code>python analyze_rankings.py &lt;batch_dir&gt;</code>
+      To rebuild the batch excluding non-song snippets, run:<br>
+      <code>python prepare_batch.py --nest-father &lt;nf&gt; --genetic-father &lt;gf&gt;
+  --existing-batch &lt;batch_dir&gt;/batch.h5
+  --exclude-csv {{ csv_path }}</code><br><br>
+      Then re-export:<br>
+      <code>python export_batch.py &lt;batch_dir&gt; --force</code>
     </div>
   </div>
 </body>
