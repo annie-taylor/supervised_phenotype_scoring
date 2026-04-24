@@ -166,7 +166,10 @@ Step 19: Start the ranking app in the background                      [EC2]
            if the SSH terminal is closed.
     conda activate supervised_phenotype_scoring
     cd ~/supervised_phenotype_scoring
-    nohup python ranking_app.py batches/<batch_name> > app.log 2>&1 &
+    nohup python ranking_app.py --all-batches > app.log 2>&1 &
+  This serves all batch directories found under batches/. To serve specific
+  batches only:
+    nohup python ranking_app.py batches/<batch1> batches/<batch2> > app.log 2>&1 &
   The app runs at: http://<public-ip>:5000
   Share this URL with scorers — no installation required on their end.
 
