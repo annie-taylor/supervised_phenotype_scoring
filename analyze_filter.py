@@ -67,7 +67,7 @@ def discover_batches(batches_root: Path) -> list[Path]:
     """Return all batch dirs under batches_root that have a prescreen CSV."""
     return [
         d for d in sorted(batches_root.iterdir())
-        if d.is_dir() and d.name != "archive" and find_prescreen_csv(d) is not None
+        if d.is_dir() and find_prescreen_csv(d) is not None
     ]
 
 
@@ -314,7 +314,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--all-batches", action="store_true",
-        help="Auto-discover all batch directories that have a prescreen CSV",
+        help="Auto-discover all batch directories under batches/ that have a prescreen CSV",
+    )
+    parser.add_argument(
+        "--all-screened-batches", action="store_true",
+        help="Auto-discover batch directories under batches/screened/ that have a prescreen CSV",
     )
     parser.add_argument(
         "--out", default=None,
@@ -322,12 +326,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.batch_dirs and not args.all_batches:
-        parser.error("Provide at least one batch_dir or use --all-batches")
+    if not args.batch_dirs and not args.all_batches and not args.all_screened_batches:
+        parser.error("Provide at least one batch_dir, --all-batches, or --all-screened-batches")
 
-    if args.all_batches:
-        batches_root = SCORING_DIR / "batches"
-        batch_dirs   = discover_batches(batches_root)
+    if args.all_screened_batches:
+        batch_dirs = discover_batches(SCORING_DIR / "batches" / "screened")
+        print(f"Found {len(batch_dirs)} screened batch(es) with prescreen CSV")
+    elif args.all_batches:
+        batch_dirs = discover_batches(SCORING_DIR / "batches")
         print(f"Found {len(batch_dirs)} batch(es) with prescreen CSV")
     else:
         batch_dirs = [Path(p).resolve() for p in args.batch_dirs]

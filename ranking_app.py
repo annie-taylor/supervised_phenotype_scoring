@@ -458,9 +458,11 @@ def main() -> None:
         description="Local web app for song ranking sessions."
     )
     parser.add_argument("batch_dirs", nargs="*",
-                        help="Batch directories to serve (omit to use --all-batches)")
+                        help="Batch directories to serve")
     parser.add_argument("--all-batches", action="store_true",
-                        help="Auto-discover all batch directories with exported spectrograms")
+                        help="Serve all batch directories under batches/")
+    parser.add_argument("--all-screened-batches", action="store_true",
+                        help="Serve all batch directories under batches/screened/")
     parser.add_argument("--port",       type=int,   default=5000)
     parser.add_argument("--batch-size", type=int,   default=7,
                         help="Songs per ranking round (default 7)")
@@ -468,20 +470,26 @@ def main() -> None:
                         choices=["local", "hosted"])
     args = parser.parse_args()
 
-    if not args.batch_dirs and not args.all_batches:
-        parser.error("Provide at least one batch_dir or use --all-batches")
+    if not args.batch_dirs and not args.all_batches and not args.all_screened_batches:
+        parser.error("Provide at least one batch_dir, --all-batches, or --all-screened-batches")
 
     ensure_sortable()
     ensure_plotly()
 
-    if args.all_batches:
-        batch_dirs = sorted(
-            d for d in (SCORING_DIR / "batches").iterdir()
+    def _discover(root: Path) -> list[Path]:
+        return sorted(
+            d for d in root.iterdir()
             if d.is_dir()
-            and d.name != "archive"
             and (d / "batch.h5").exists()
             and (d / "export" / "spectrograms").exists()
         )
+
+    if args.all_screened_batches:
+        screened_root = SCORING_DIR / "batches" / "screened"
+        screened_root.mkdir(exist_ok=True)
+        batch_dirs = _discover(screened_root)
+    elif args.all_batches:
+        batch_dirs = _discover(SCORING_DIR / "batches")
     else:
         batch_dirs = [Path(d).resolve() for d in args.batch_dirs]
 
