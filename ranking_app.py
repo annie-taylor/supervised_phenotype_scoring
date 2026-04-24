@@ -230,41 +230,59 @@ def next_batch(state: dict) -> list[str] | None:
 
 # ── Flask app factory ─────────────────────────────────────────────────────────────
 
-def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
+def create_app(batches: dict[str, dict], batch_size: int, cfg_mode: str) -> Flask:
+    """
+    Parameters
+    ----------
+    batches : dict[str, dict]
+        Mapping of batch directory name → batch dict (from load_batch).
+    """
     app = Flask(__name__, template_folder=str(SCORING_DIR / "templates"),
                 static_folder=str(SCORING_DIR / "static"))
     app.secret_key = os.urandom(24)
-
-    batch = load_batch(batch_dir)
-    app.config["BATCH"]      = batch
     app.config["BATCH_SIZE"] = batch_size
     app.config["MODE"]       = cfg_mode
 
-    nf = batch["pairing"]["nest_father"]
-    gf = batch["pairing"]["genetic_father"]
+    # Anonymized display labels — scorers never see real batch names or bird IDs
+    batch_labels: dict[str, str] = {
+        name: f"Batch {i + 1}"
+        for i, name in enumerate(batches)
+    }
+
+    def _batch_for_session(state: dict) -> dict | None:
+        return batches.get(state["batch_id"])
 
     # ── Landing page ─────────────────────────────────────────────────────────
     @app.route("/")
     def index():
-        return render_template("index.html",
-                               pairing=f"{nf} × {gf}",
-                               traits=TRAITS)
+        batch_list = [
+            {
+                "name":       name,
+                "label":      batch_labels[name],
+                "n_snippets": len(b["uid_meta"]),
+            }
+            for name, b in batches.items()
+        ]
+        return render_template("index.html", batches=batch_list, traits=TRAITS)
 
     # ── Start session ─────────────────────────────────────────────────────────
     @app.route("/start", methods=["POST"])
     def start():
-        scorer = request.form.get("scorer", "").strip()
-        trait  = request.form.get("trait", "").strip()
-        if not scorer:
+        scorer     = request.form.get("scorer", "").strip()
+        trait      = request.form.get("trait", "").strip()
+        batch_name = request.form.get("batch", "").strip()
+
+        if not scorer or batch_name not in batches:
             return redirect(url_for("index"))
         if trait not in TRAITS:
             trait = TRAITS[0]
 
-        sid = new_scoring_session(scorer, trait, batch, batch_size)
+        batch = batches[batch_name]
+        sid   = new_scoring_session(scorer, trait, batch, batch_size)
         session["sid"] = sid
 
-        # Pre-load first batch
         state = get_session(sid)
+        state["batch_label"]   = batch_labels[batch_name]
         state["current_batch"] = next_batch(state)
         return redirect(url_for("rank"))
 
@@ -280,13 +298,11 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
         if not current:
             return redirect(url_for("done"))
 
-        total    = len(state["pool"])
+        total       = len(state["pool"])
         done_so_far = state["pool_pos"] - len(current)
         round_num   = len(state["rounds"]) + 1
 
-        # Build display data — only short UID prefix shown to scorer
-        songs = [{"uid": uid, "uid_short": uid[:8] + "…"}
-                 for uid in current]
+        songs = [{"uid": uid, "uid_short": uid[:8] + "…"} for uid in current]
 
         return render_template(
             "rank.html",
@@ -296,7 +312,7 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
             round_num=round_num,
             completed=done_so_far,
             total=total,
-            pairing=f"{nf} × {gf}",
+            pairing=state["batch_label"],
         )
 
     # ── Submit ranking ────────────────────────────────────────────────────────
@@ -307,6 +323,7 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
         if not state:
             return jsonify({"error": "session not found"}), 400
 
+        batch     = _batch_for_session(state)
         data      = request.get_json()
         ranking   = data.get("ranking",  [])
         flagged   = data.get("flagged",  [])
@@ -323,10 +340,7 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
         }
         state["rounds"].append(round_record)
 
-        # Save to disk after every round
         save_session_to_disk(state, batch["sessions_dir"])
-
-        # Advance to next batch
         state["current_batch"] = next_batch(state)
 
         if state["current_batch"] is None:
@@ -349,20 +363,21 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
         state = get_session(sid)
         n_rounds = len(state["rounds"]) if state else 0
         n_songs  = n_rounds * batch_size
-        scorer   = state["scorer"] if state else "Unknown"
-        trait    = state["trait"]  if state else ""
+        scorer   = state["scorer"]      if state else "Unknown"
+        trait    = state["trait"]       if state else ""
+        pairing  = state.get("batch_label", "") if state else ""
         return render_template("done.html",
                                scorer=scorer, trait=trait,
                                n_rounds=n_rounds, n_songs=n_songs,
-                               pairing=f"{nf} × {gf}")
+                               pairing=pairing)
 
     # ── Interactive spectrogram (for comparison panels) ───────────────────────
     @app.route("/spec_interactive/<uid>")
     def spec_interactive(uid: str):
-        """Compute a fresh high-res spectrogram from the exported WAV and return
-        it as JSON {z, x, y} for Plotly.  Uses INTERACTIVE_HOP rather than the
-        batch hop so the payload stays manageable (~3-4 MB for an 8-second clip).
-        """
+        state = get_session(session.get("sid"))
+        if not state:
+            return "No session", 404
+        batch    = _batch_for_session(state)
         if uid not in batch["uid_meta"]:
             return "Not found", 404
         wav_path = batch["export_dir"] / "audio" / f"{uid}.wav"
@@ -388,7 +403,10 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
     # ── Asset routes ──────────────────────────────────────────────────────────
     @app.route("/spec/<uid>")
     def serve_spec(uid: str):
-        # Validate UID is in the batch (prevents path traversal)
+        state = get_session(session.get("sid"))
+        if not state:
+            return "No session", 404
+        batch = _batch_for_session(state)
         if uid not in batch["uid_meta"]:
             return "Not found", 404
         path = batch["export_dir"] / "spectrograms" / f"{uid}.png"
@@ -398,6 +416,10 @@ def create_app(batch_dir: Path, batch_size: int, cfg_mode: str) -> Flask:
 
     @app.route("/audio/<uid>")
     def serve_audio(uid: str):
+        state = get_session(session.get("sid"))
+        if not state:
+            return "No session", 404
+        batch = _batch_for_session(state)
         if uid not in batch["uid_meta"]:
             return "Not found", 404
         path = batch["export_dir"] / "audio" / f"{uid}.wav"
@@ -414,7 +436,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Local web app for song ranking sessions."
     )
-    parser.add_argument("batch_dir", help="Path to batch directory")
+    parser.add_argument("batch_dirs", nargs="*",
+                        help="Batch directories to serve (omit to use --all-batches)")
+    parser.add_argument("--all-batches", action="store_true",
+                        help="Auto-discover all batch directories with exported spectrograms")
     parser.add_argument("--port",       type=int,   default=5000)
     parser.add_argument("--batch-size", type=int,   default=7,
                         help="Songs per ranking round (default 7)")
@@ -422,14 +447,38 @@ def main() -> None:
                         choices=["local", "hosted"])
     args = parser.parse_args()
 
+    if not args.batch_dirs and not args.all_batches:
+        parser.error("Provide at least one batch_dir or use --all-batches")
+
     ensure_sortable()
     ensure_plotly()
 
-    batch_dir = Path(args.batch_dir).resolve()
-    app       = create_app(batch_dir, args.batch_size, args.mode)
+    if args.all_batches:
+        batch_dirs = sorted(
+            d for d in (SCORING_DIR / "batches").iterdir()
+            if d.is_dir()
+            and (d / "batch.h5").exists()
+            and (d / "export" / "spectrograms").exists()
+        )
+    else:
+        batch_dirs = [Path(d).resolve() for d in args.batch_dirs]
+
+    batches: dict[str, dict] = {}
+    for bd in batch_dirs:
+        try:
+            batches[bd.name] = load_batch(bd)
+            print(f"  loaded {bd.name}")
+        except Exception as e:
+            print(f"  WARNING: skipping {bd.name}: {e}")
+
+    if not batches:
+        print("No valid batches found — check paths and run export_batch.py first.")
+        return
+
+    app = create_app(batches, args.batch_size, args.mode)
 
     print(f"\n=== Song Ranking App ===")
-    print(f"Batch:      {batch_dir.name}")
+    print(f"Batches:    {len(batches)}")
     print(f"Batch size: {args.batch_size} songs/round")
     print(f"Open in browser: http://localhost:{args.port}/\n")
 

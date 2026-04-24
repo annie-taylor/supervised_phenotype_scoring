@@ -46,9 +46,15 @@
 <body>
   <div class="card">
     <h1>Song Ranking</h1>
-    <div class="sub">Pairing: {{ pairing }}</div>
 
     <form method="POST" action="/start">
+      <label for="batch">Batch</label>
+      <select id="batch" name="batch">
+        {% for b in batches %}
+        <option value="{{ b.name }}">{{ b.label }} &nbsp;({{ b.n_snippets }} snippets)</option>
+        {% endfor %}
+      </select>
+
       <label for="scorer">Your name or initials</label>
       <input type="text" id="scorer" name="scorer"
              placeholder="e.g. Annie" autocomplete="off" required>
@@ -76,7 +82,7 @@
 
     <div class="instructions">
       <strong>How it works:</strong><br>
-      You will see {{ 7 }} spectrograms per round. Click a spectrogram to play
+      You will see spectrograms per round. Click a spectrogram to play
       its audio. Drag the cards into order — leftmost = most of the trait,
       rightmost = least. Submit when ready. You can stop at any time; your
       progress is saved after each round.
