@@ -666,6 +666,9 @@ def main() -> None:
                         help="Path to an existing batch.h5; valid snippets "
                              "are carried over and only the shortfall is "
                              "recomputed (use with --exclude-csv)")
+    parser.add_argument("--output-dir", default=None,
+                        help="Override the output directory from config.json "
+                             "(e.g. batches/screened)")
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -673,6 +676,8 @@ def main() -> None:
         cfg["snippets_per_bird"] = args.snippets_per_bird
     if args.workers:
         cfg["n_workers"] = args.workers
+    if args.output_dir:
+        cfg["output_dir"] = args.output_dir
 
     nf, gf  = args.nest_father, args.genetic_father
     pairing = {"nest_father": nf, "genetic_father": gf}

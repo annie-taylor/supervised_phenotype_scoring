@@ -161,9 +161,13 @@ def phase1(pairings: list[tuple[str, str]], args: argparse.Namespace,
 
 def phase2(pairings: list[tuple[str, str]], args: argparse.Namespace,
            output_dir: Path) -> None:
-    """Rebuild batches with prescreen exclusions and re-export."""
+    """Rebuild batches with prescreen exclusions and re-export into batches/screened/."""
+    screened_dir = output_dir / "screened"
+    screened_dir.mkdir(exist_ok=True)
+
     print(f"\n{'='*60}")
     print(f"PHASE 2 — Rebuilding {len(pairings)} batch(es) with exclusions")
+    print(f"Output: {screened_dir}")
     print(f"{'='*60}")
 
     succeeded, failed, skipped = [], [], []
@@ -188,11 +192,12 @@ def phase2(pairings: list[tuple[str, str]], args: argparse.Namespace,
 
         print(f"  prescreen CSV: {prescreen_csv.name}")
 
-        # prepare_batch.py --exclude-csv --existing-batch
+        # prepare_batch.py — write finalized batch into batches/screened/
         cmd = [sys.executable, "prepare_batch.py",
                "--nest-father", nf, "--genetic-father", gf,
                "--exclude-csv", str(prescreen_csv),
-               "--existing-batch", str(phase1_dir / "batch.h5")]
+               "--existing-batch", str(phase1_dir / "batch.h5"),
+               "--output-dir", str(screened_dir)]
         if args.snippets_per_bird:
             cmd += ["--snippets-per-bird", str(args.snippets_per_bird)]
         if args.workers:
@@ -201,8 +206,8 @@ def phase2(pairings: list[tuple[str, str]], args: argparse.Namespace,
             failed.append(label)
             continue
 
-        # export_batch.py — use today's batch dir (may be same or new)
-        batch_dir = today_batch_dir(output_dir, nf, gf)
+        # export_batch.py — use the screened batch dir
+        batch_dir = today_batch_dir(screened_dir, nf, gf)
         if not batch_dir.exists():
             print(f"  ✗ expected batch dir not found: {batch_dir}")
             failed.append(label)
@@ -222,14 +227,14 @@ def phase2(pairings: list[tuple[str, str]], args: argparse.Namespace,
     _print_summary(succeeded, failed, phase=2, skipped=skipped)
 
     if succeeded:
-        print("\nBatches ready for upload to EC2:")
+        print("\nScreened batches ready for upload to EC2:")
         for label, batch_dir in succeeded:
             print(f"  {batch_dir.name}")
         print("\nUpload each batch (run in PowerShell):")
         for _, batch_dir in succeeded:
             print(f'  scp -i "C:\\Users\\Eric\\.ssh\\scoring-key" -r '
                   f'"{batch_dir}" '
-                  f'ubuntu@<public-ip>:~/supervised_phenotype_scoring/batches/')
+                  f'ubuntu@<public-ip>:~/supervised_phenotype_scoring/batches/screened/')
 
 
 # ── Summary ───────────────────────────────────────────────────────────────────
