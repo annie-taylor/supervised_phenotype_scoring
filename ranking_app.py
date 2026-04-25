@@ -94,6 +94,23 @@ def ensure_plotly() -> None:
 
 # ── Batch loading ────────────────────────────────────────────────────────────────
 
+def _find_prescreen_csv(batch_dir: Path) -> Path | None:
+    """Return the most recent prescreen_*.csv in batch_dir, or None."""
+    csvs = sorted(batch_dir.glob("prescreen_*.csv"))
+    return csvs[-1] if csvs else None
+
+
+def _prescreen_excluded_uids(csv_path: Path) -> set[str]:
+    """Return UIDs labeled not_song or rendering_error in the prescreen CSV."""
+    import csv as _csv
+    excluded: set[str] = set()
+    with open(csv_path, newline="") as f:
+        for row in _csv.DictReader(f):
+            if row.get("label", "") in ("not_song", "rendering_error"):
+                excluded.add(row["uid"])
+    return excluded
+
+
 def load_batch(batch_dir: Path) -> dict:
     """
     Load batch metadata from batch.h5.  Returns a dict with:
@@ -102,6 +119,9 @@ def load_batch(batch_dir: Path) -> dict:
         export_dir : Path
         h5_path    : Path
         sessions_dir: Path
+
+    UIDs labeled not_song or rendering_error in any prescreen CSV are removed
+    from uid_meta so they never appear in scoring sessions.
     """
     h5_path    = batch_dir / "batch.h5"
     export_dir = batch_dir / "export"
@@ -126,6 +146,14 @@ def load_batch(batch_dir: Path) -> dict:
                 "spec_idx": int(row["spec_idx"]),
             }
 
+    prescreen_csv = _find_prescreen_csv(batch_dir)
+    if prescreen_csv:
+        excluded = _prescreen_excluded_uids(prescreen_csv)
+        for uid in excluded:
+            uid_meta.pop(uid, None)
+        if excluded:
+            print(f"  {batch_dir.name}: excluded {len(excluded)} non-song UID(s) via prescreen CSV")
+
     return {
         "uid_meta":    uid_meta,
         "pairing":     pairing,
@@ -135,10 +163,33 @@ def load_batch(batch_dir: Path) -> dict:
     }
 
 
+# ── Previously flagged UID collection ────────────────────────────────────────────
+
+def load_previously_flagged(sessions_dir: Path) -> set[str]:
+    """
+    Scan all session JSON files under sessions_dir (all mode subdirs) and return
+    the set of UIDs that have been flagged in any round of any past session.
+    """
+    flagged: set[str] = set()
+    search_dirs = [sessions_dir] + [d for d in sessions_dir.iterdir() if d.is_dir()] \
+        if sessions_dir.exists() else []
+    for d in search_dirs:
+        for path in d.glob("*.json"):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                for rnd in data.get("rounds", []):
+                    flagged.update(rnd.get("flagged", []))
+            except Exception:
+                pass
+    return flagged
+
+
 # ── Session pool builder ─────────────────────────────────────────────────────────
 
 def build_session_pool(uid_meta: dict, batch_size: int, seed: int,
-                       scoring_mode: str = "all") -> list[str]:
+                       scoring_mode: str = "all",
+                       exclude_uids: set[str] | None = None) -> list[str]:
     """
     Create a shuffled pool of UIDs arranged so that consecutive windows of
     batch_size contain songs from varied roles.
@@ -148,12 +199,13 @@ def build_session_pool(uid_meta: dict, batch_size: int, seed: int,
     In ``same_tutor`` mode, roles in SAME_TUTOR_EXCLUDE are omitted from
     the pool so only birds that heard the same tutor are compared.
     """
-    exclude = SAME_TUTOR_EXCLUDE if scoring_mode == "same_tutor" else frozenset()
+    exclude      = SAME_TUTOR_EXCLUDE if scoring_mode == "same_tutor" else frozenset()
+    skip_uids    = exclude_uids or set()
     rng    = np.random.default_rng(seed)
     by_role: dict[str, list] = {r: [] for r in ROLE_ORDER}
     for uid, meta in uid_meta.items():
         role = meta["role"]
-        if role in exclude:
+        if role in exclude or uid in skip_uids:
             continue
         if role in by_role:
             by_role[role].append(uid)
@@ -187,9 +239,11 @@ _lock = threading.Lock()
 def new_scoring_session(scorer: str, trait: str, batch: dict,
                         batch_size: int, scoring_mode: str = "all") -> str:
     """Create a new scoring session, return its sid."""
-    sid  = str(uuid.uuid4())
-    seed = int(time.time() * 1000) % (2**31)
-    pool = build_session_pool(batch["uid_meta"], batch_size, seed, scoring_mode)
+    sid         = str(uuid.uuid4())
+    seed        = int(time.time() * 1000) % (2**31)
+    prev_flagged = load_previously_flagged(batch["sessions_dir"])
+    pool = build_session_pool(batch["uid_meta"], batch_size, seed,
+                              scoring_mode, exclude_uids=prev_flagged)
 
     state = {
         "sid":          sid,
