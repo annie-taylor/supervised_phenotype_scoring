@@ -58,7 +58,7 @@ PLOTLY_JS    = SCORING_DIR / "static" / "plotly.min.js"
 INTERACTIVE_HOP  = 64
 INTERACTIVE_NFFT = 512
 
-TRAITS = ["stereotypy", "repeat_propensity"]
+TRAITS = ["repeat_propensity", "stereotypy"]
 
 ROLE_ORDER = ["nest_father", "genetic_father", "xf", "hr_nest", "hr_genetic"]
 
