@@ -132,22 +132,33 @@ def load_existing_batch(
     }
 
 
-def load_exclude_set(csv_path: Path) -> set[tuple[str, float]]:
+def load_exclude_set(
+    csv_path: Path,
+) -> tuple[set[tuple[str, float]], set[str]]:
     """
-    Load a set of (source_file, snippet_start_s) pairs to exclude from a
-    prescreen CSV.  Only rows with label ``not_song`` or ``rendering_error``
-    are excluded; ``song`` rows are ignored.
+    Load exclusion data from a prescreen or combined-exclude CSV.
 
-    The start time is rounded to 2 decimal places for robust matching across
-    floating-point representations.
+    Only rows with label ``not_song`` or ``rendering_error`` are excluded;
+    ``song`` rows are ignored.
+
+    Returns
+    -------
+    exclude_positions : set of (source_file, snippet_start_s) tuples
+        Individual positions to exclude (start time rounded to 2 d.p.).
+    exclude_files : set of str
+        Source file paths from which *any* snippet was excluded.  The entire
+        file is skipped during snippet planning so that noise-contaminated
+        recordings are not re-sampled at different positions.
     """
-    exclude: set[tuple[str, float]] = set()
+    exclude_positions: set[tuple[str, float]] = set()
+    exclude_files:     set[str]               = set()
     with open(csv_path, newline="") as f:
         for row in csv.DictReader(f):
             if row.get("label", "not_song") != "song":
-                exclude.add((row["source_file"],
-                             round(float(row["snippet_start_s"]), 2)))
-    return exclude
+                src = row["source_file"]
+                exclude_positions.add((src, round(float(row["snippet_start_s"]), 2)))
+                exclude_files.add(src)
+    return exclude_positions, exclude_files
 
 
 # ── Bird registry ────────────────────────────────────────────────────────────────
@@ -282,6 +293,7 @@ def plan_snippets(
     cfg:                  dict,
     rng:                  np.random.Generator,
     exclude_set:          set[tuple[str, float]] | None = None,
+    exclude_files:        set[str] | None = None,
     per_bird_existing:    dict[str, int] | None = None,
     existing_positions:   set[tuple[str, float]] | None = None,
 ) -> list[dict]:
@@ -293,9 +305,13 @@ def plan_snippets(
     Parameters
     ----------
     exclude_set : set of (source_file, snippet_start_s) tuples, optional
-        Snippets whose (source_file, round(start_s, 2)) key is present in
-        this set are skipped.  Populated from a prescreen CSV via
+        Individual positions to skip.  Populated from a prescreen CSV via
         ``load_exclude_set()``.
+    exclude_files : set of str, optional
+        Source file paths to skip entirely.  Any file from which a snippet
+        was previously excluded (noise/call/rendering error) is blacklisted
+        so that it is never re-sampled at a different position.  Populated
+        from the second return value of ``load_exclude_set()``.
     per_bird_existing : dict {bird_id: count}, optional
         Number of valid snippets already in the batch for each bird.  Only
         the shortfall up to ``cfg['snippets_per_bird']`` is planned.
@@ -338,6 +354,11 @@ def plan_snippets(
             if remaining <= 0:
                 break
             fp = cand["filepath"]
+
+            # Skip entire files that contained excluded snippets
+            if exclude_files and fp in exclude_files:
+                continue
+
 
             # Get actual duration; fall back to size estimate (1 MB ≈ 40 s at 32kHz 16-bit)
             file_dur = get_audio_duration(fp)
@@ -714,11 +735,13 @@ def main() -> None:
     print(f"  {found}/{len(registry)} birds have audio candidates")
 
     # ── Load exclusion list ───────────────────────────────────────────────────
-    exclude_set = None
+    exclude_set   = None
+    exclude_files = None
     if args.exclude_csv:
-        exclude_path = Path(args.exclude_csv)
-        exclude_set  = load_exclude_set(exclude_path)
-        print(f"\nExclusion list: {len(exclude_set)} snippet(s) from {exclude_path.name}")
+        exclude_path  = Path(args.exclude_csv)
+        exclude_set, exclude_files = load_exclude_set(exclude_path)
+        print(f"\nExclusion list: {len(exclude_set)} snippet(s) from "
+              f"{exclude_path.name} ({len(exclude_files)} source file(s) blacklisted)")
 
     # ── Load existing batch (top-up mode) ────────────────────────────────────
     existing_data = None
@@ -741,6 +764,7 @@ def main() -> None:
     tasks = plan_snippets(
         registry, audio_candidates, cfg, rng,
         exclude_set=exclude_set,
+        exclude_files=exclude_files,
         per_bird_existing=existing_data["per_bird_valid"] if existing_data else None,
         existing_positions=existing_data["existing_positions"] if existing_data else None,
     )
