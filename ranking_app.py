@@ -116,12 +116,15 @@ def load_batch(batch_dir: Path) -> dict:
     Load batch metadata from batch.h5.  Returns a dict with:
         uid_meta   : {uid: {role, bird_id, spec_idx}}  (no scorer-visible identity)
         pairing    : {nest_father, genetic_father}
+        spec_cfg   : spectrogram config dict (nfft, hop, p_low, p_high, ...)
         export_dir : Path
         h5_path    : Path
         sessions_dir: Path
 
     UIDs labeled not_song or rendering_error in any prescreen CSV are removed
-    from uid_meta so they never appear in scoring sessions.
+    from uid_meta so they never appear in scoring sessions.  UIDs with no
+    prescreen label at all (unscreened snippets) are also excluded — only
+    snippets explicitly labeled ``song`` are kept.
     """
     h5_path    = batch_dir / "batch.h5"
     export_dir = batch_dir / "export"
@@ -137,7 +140,8 @@ def load_batch(batch_dir: Path) -> dict:
 
     uid_meta = {}
     with tables.open_file(str(h5_path), mode="r") as h5:
-        pairing = json.loads(h5.root.config._v_attrs["pairing"])
+        pairing  = json.loads(h5.root.config._v_attrs["pairing"])
+        spec_cfg = json.loads(h5.root.config._v_attrs["spectrogram"])
         for row in h5.root.manifest.iterrows():
             uid = row["uid"].decode()
             uid_meta[uid] = {
@@ -148,15 +152,38 @@ def load_batch(batch_dir: Path) -> dict:
 
     prescreen_csv = _find_prescreen_csv(batch_dir)
     if prescreen_csv:
-        excluded = _prescreen_excluded_uids(prescreen_csv)
-        for uid in excluded:
+        import csv as _csv
+        song_uids:    set[str] = set()
+        not_song_uids: set[str] = set()
+        with open(prescreen_csv, newline="") as f:
+            for row in _csv.DictReader(f):
+                lbl = row.get("label", "")
+                if lbl == "song":
+                    song_uids.add(row["uid"])
+                else:
+                    not_song_uids.add(row["uid"])
+
+        before = len(uid_meta)
+        # Remove explicitly excluded UIDs
+        for uid in not_song_uids:
             uid_meta.pop(uid, None)
-        if excluded:
-            print(f"  {batch_dir.name}: excluded {len(excluded)} non-song UID(s) via prescreen CSV")
+        # Remove unscreened UIDs (in batch but not in CSV at all)
+        unscreened = set(uid_meta.keys()) - song_uids - not_song_uids
+        for uid in unscreened:
+            uid_meta.pop(uid, None)
+        after = len(uid_meta)
+        n_excluded   = len(not_song_uids)
+        n_unscreened = len(unscreened)
+        print(f"  {batch_dir.name}: {after}/{before} snippets kept "
+              f"({n_excluded} non-song, {n_unscreened} unscreened excluded)")
+    else:
+        spec_cfg = spec_cfg  # already set above
+        print(f"  {batch_dir.name}: no prescreen CSV found — all {len(uid_meta)} snippets included")
 
     return {
         "uid_meta":    uid_meta,
         "pairing":     pairing,
+        "spec_cfg":    spec_cfg,
         "h5_path":     h5_path,
         "export_dir":  export_dir,
         "sessions_dir": sessions_dir,
@@ -458,14 +485,19 @@ def create_app(batches: dict[str, dict], batch_size: int, cfg_mode: str) -> Flas
         wav_path = batch["export_dir"] / "audio" / f"{uid}.wav"
         if not wav_path.exists():
             return "WAV not exported yet — run export_batch.py", 404
+        # Use the same normalization parameters as prepare_batch.py so the
+        # Plotly panel matches the PNG export (p_low/p_high percentile stretch).
+        scfg = batch.get("spec_cfg", {})
         try:
             audio, sr = fsg.read_audio_file(str(wav_path))
             spec, f, t = fsg.make_song_spectrogram(
                 audio.astype(np.float64), sr,
                 nfft=INTERACTIVE_NFFT,
                 hop=INTERACTIVE_HOP,
-                min_freq=400,
-                max_freq=10000,
+                min_freq=scfg.get("min_freq", 400),
+                max_freq=scfg.get("max_freq", 10000),
+                p_low=scfg.get("p_low", 2),
+                p_high=scfg.get("p_high", 98),
             )
         except Exception as e:
             return jsonify({"error": str(e)}), 500
