@@ -114,6 +114,8 @@ def write_labels_csv(csv_path: Path, labels: dict[str, str], uid_meta: dict) -> 
         )
         writer.writeheader()
         for uid, label in labels.items():
+            if uid not in uid_meta:
+                continue  # snippet excluded from this batch rebuild — skip silently
             meta = uid_meta[uid]
             writer.writerow({
                 "uid":             uid,
@@ -163,7 +165,11 @@ def create_app(batch_dir: Path) -> Flask:
     csv_path = prescreen_csv_path(batch_dir)
 
     all_uids = batch["uids"]
-    existing = load_existing_labels(csv_path)
+    # Filter existing labels to only those UIDs present in the current batch.
+    # Excluded snippets (not_song / rendering_error) are removed from the HDF5
+    # during a top-up rebuild, so their UIDs are no longer in uid_meta.
+    existing = {uid: lbl for uid, lbl in load_existing_labels(csv_path).items()
+                if uid in batch["uid_meta"]}
 
     # Start cursor at the first unlabeled snippet
     first_unlabeled = next(

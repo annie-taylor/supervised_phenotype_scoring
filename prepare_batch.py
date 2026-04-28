@@ -690,6 +690,11 @@ def main() -> None:
     parser.add_argument("--output-dir", default=None,
                         help="Override the output directory from config.json "
                              "(e.g. batches/screened)")
+    parser.add_argument("--no-topup", action="store_true",
+                        help="When used with --existing-batch, carry over valid "
+                             "snippets without searching for new ones to fill "
+                             "underfull birds.  Use this to lock in a batch after "
+                             "prescreening without triggering another top-up cycle.")
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -760,14 +765,18 @@ def main() -> None:
 
     # ── Plan snippets ─────────────────────────────────────────────────────────
     rng = np.random.default_rng(cfg["seed"])
-    print("\nPlanning snippets...")
-    tasks = plan_snippets(
-        registry, audio_candidates, cfg, rng,
-        exclude_set=exclude_set,
-        exclude_files=exclude_files,
-        per_bird_existing=existing_data["per_bird_valid"] if existing_data else None,
-        existing_positions=existing_data["existing_positions"] if existing_data else None,
-    )
+    if args.no_topup and existing_data:
+        print("\n--no-topup: skipping snippet search, carrying over existing only.")
+        tasks = []
+    else:
+        print("\nPlanning snippets...")
+        tasks = plan_snippets(
+            registry, audio_candidates, cfg, rng,
+            exclude_set=exclude_set,
+            exclude_files=exclude_files,
+            per_bird_existing=existing_data["per_bird_valid"] if existing_data else None,
+            existing_positions=existing_data["existing_positions"] if existing_data else None,
+        )
 
     if not tasks and not existing_data:
         print("\nNo snippets could be planned — check audio paths and candidates cache.")
@@ -778,26 +787,29 @@ def main() -> None:
              if existing_data else "") + ".")
 
     # ── Compute spectrograms (parallel) ───────────────────────────────────────
-    print(f"\nComputing spectrograms ({cfg['n_workers']} workers)...")
     results: dict = {}
     n_errors = 0
 
-    with ProcessPoolExecutor(max_workers=cfg["n_workers"]) as pool:
-        futures = {pool.submit(compute_snippet, t): t["uid"] for t in tasks}
-        for i, fut in enumerate(as_completed(futures), 1):
-            res      = fut.result()
-            uid      = res["uid"]
-            results[uid] = res
-            if res.get("error"):
-                n_errors += 1
-                print(f"  [{i:3d}/{len(tasks)}] ERR  {uid[:8]}…  {res['error']}")
-            elif i % 20 == 0 or i == len(tasks):
-                print(f"  [{i:3d}/{len(tasks)}] ok")
+    if tasks:
+        print(f"\nComputing spectrograms ({cfg['n_workers']} workers)...")
+        with ProcessPoolExecutor(max_workers=cfg["n_workers"]) as pool:
+            futures = {pool.submit(compute_snippet, t): t["uid"] for t in tasks}
+            for i, fut in enumerate(as_completed(futures), 1):
+                res      = fut.result()
+                uid      = res["uid"]
+                results[uid] = res
+                if res.get("error"):
+                    n_errors += 1
+                    print(f"  [{i:3d}/{len(tasks)}] ERR  {uid[:8]}…  {res['error']}")
+                elif i % 20 == 0 or i == len(tasks):
+                    print(f"  [{i:3d}/{len(tasks)}] ok")
 
     n_ok = len(tasks) - n_errors
-    print(f"\n{n_ok} succeeded, {n_errors} failed.")
+    if tasks:
+        print(f"\n{n_ok} succeeded, {n_errors} failed.")
 
-    if n_ok == 0:
+    n_existing = len(existing_data["valid_rows"]) if existing_data else 0
+    if n_ok == 0 and n_existing == 0:
         print("Nothing to write — exiting.")
         return
 
