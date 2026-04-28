@@ -131,6 +131,20 @@ Step 6 — Analyze rankings
 
     python analyze_rankings.py batches/pk24bu3_wh88br85_20260414 --trait all
 
+When ``--scoring-mode`` is given, the mode is included in all output filenames
+(e.g. ``<batch>_same_tutor_<trait>_elo.csv``) so results from different modes
+do not overwrite each other.
+
+Options:
+
+- ``--trait <name>`` — ``stereotypy``, ``repeat_propensity``, or ``all`` (default)
+- ``--scoring-mode <mode>`` — ``same_tutor`` or ``all``; loads sessions from
+  ``sessions/<mode>/`` and prefixes outputs with the mode name
+- ``--k <float>`` — Elo K-factor (default 32)
+- ``--min-rounds <n>`` — warn if a scorer has fewer than n rounds
+- ``--no-plots`` — skip PNG plot generation
+- ``--output-dir <path>`` — override the default ``results/`` directory
+
 Outputs written to ``results/``:
 
 .. list-table::
@@ -138,16 +152,42 @@ Outputs written to ``results/``:
 
    * - File
      - Description
-   * - ``<batch>_<trait>_elo.csv``
-     - Per-snippet Elo scores
-   * - ``<batch>_<trait>_birds.csv``
-     - Per-bird averages by role
-   * - ``<batch>_<trait>_irr.csv``
-     - Pairwise Kendall τ between scorers
-   * - ``<batch>_<trait>_summary.txt``
-     - Human-readable digest
-   * - ``<batch>_flagged.csv``
+   * - ``<stem>_<trait>_elo.csv``
+     - Per-snippet Elo scores, sorted highest to lowest
+   * - ``<stem>_<trait>_birds.csv``
+     - Per-bird mean Elo ± SD, sorted by role then score
+   * - ``<stem>_<trait>_consistency.csv``
+     - Per-snippet rank consistency: mean and SD of normalised rank position
+       across all (scorer, round) appearances
+   * - ``<stem>_<trait>_irr.csv``
+     - Pairwise Kendall τ-b between scorers on shared UIDs
+   * - ``<stem>_<trait>_summary.txt``
+     - Human-readable digest: role means, offspring vs. father gaps, IRR
+   * - ``<stem>_flagged.csv``
      - Noise/call snippets flagged during scoring
+   * - ``<stem>_<trait>_bird_elo.png``
+     - Bar chart of per-bird mean Elo ± SD, coloured by role
+   * - ``<stem>_<trait>_snippet_elo.png``
+     - Strip plot of per-snippet Elo by role with median line
+   * - ``<stem>_<trait>_rank_consistency.png``
+     - Scatter: mean normalised rank vs. SD, one point per snippet
+   * - ``<stem>_<trait>_scorer_agreement.png``
+     - Pairwise scorer rank scatter with Kendall τ annotation
+
+``<stem>`` is ``<batch_id>`` when no scoring mode is given, or
+``<batch_id>_<scoring_mode>`` otherwise.
+
+Interactive exploration
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Open ``explore_rankings.ipynb`` in Jupyter for an interactive walkthrough of
+all analyses.  Set ``BATCH_DIR``, ``SCORING_MODE``, and ``TRAIT`` at the top
+and run all cells.  The notebook covers:
+
+- Per-bird and per-snippet ranking tables
+- All four plots inline
+- Within-scorer vs. across-scorer consistency breakdown
+- Side-by-side scoring-mode comparison (``same_tutor`` vs ``all``)
 
 ----
 
@@ -278,9 +318,33 @@ Output files reference
    * - ``sessions/<scorer>_<trait>_<date>.json``
      - ``ranking_app.py``
      - Per-scorer ranking records
-   * - ``results/<batch>_<trait>_elo.csv``
+   * - ``results/<stem>_<trait>_elo.csv``
      - ``analyze_rankings.py``
      - Per-snippet Elo scores
-   * - ``results/<batch>_flagged.csv``
+   * - ``results/<stem>_<trait>_birds.csv``
      - ``analyze_rankings.py``
-     - Snippets flagged during scoring
+     - Per-bird mean Elo ± SD by role
+   * - ``results/<stem>_<trait>_consistency.csv``
+     - ``analyze_rankings.py``
+     - Per-snippet rank consistency stats
+   * - ``results/<stem>_<trait>_irr.csv``
+     - ``analyze_rankings.py``
+     - Pairwise Kendall τ between scorers
+   * - ``results/<stem>_<trait>_summary.txt``
+     - ``analyze_rankings.py``
+     - Human-readable digest
+   * - ``results/<stem>_flagged.csv``
+     - ``analyze_rankings.py``
+     - Noise/call snippets flagged during scoring
+   * - ``results/<stem>_<trait>_bird_elo.png``
+     - ``analyze_rankings.py``
+     - Per-bird Elo bar chart
+   * - ``results/<stem>_<trait>_snippet_elo.png``
+     - ``analyze_rankings.py``
+     - Per-snippet Elo strip plot by role
+   * - ``results/<stem>_<trait>_rank_consistency.png``
+     - ``analyze_rankings.py``
+     - Mean rank vs. SD scatter
+   * - ``results/<stem>_<trait>_scorer_agreement.png``
+     - ``analyze_rankings.py``
+     - Pairwise scorer rank scatter
