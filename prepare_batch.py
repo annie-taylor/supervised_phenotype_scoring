@@ -176,12 +176,6 @@ def load_bird_registry(fm_dir: str, nest_father: str, genetic_father: str) -> di
     """
     fm = Path(fm_dir)
     pair_df = pd.read_csv(fm / "nest_gen_pair_offspring_summary.csv")
-    gf_df   = pd.read_csv(fm / "genetic_father_offspring_summary.csv")
-
-    gf_hr_pool = {
-        row["Genetic Father"]: _parse_bird_list(row.get("HR Birds", ""))
-        for _, row in gf_df.iterrows()
-    }
 
     row_df = pair_df[
         (pair_df["Nest Father"]    == nest_father) &
@@ -196,9 +190,9 @@ def load_bird_registry(fm_dir: str, nest_father: str, genetic_father: str) -> di
     row = row_df.iloc[0]
     nf, gf = str(row["Nest Father"]), str(row["Genetic Father"])
 
-    xf_birds   = [b for b in _parse_bird_list(row.get("XF Birds",  "")) if b not in (nf, gf)]
-    hr_nf_pool = [b for b in gf_hr_pool.get(nf, [])                     if b not in (nf, gf)]
-    hr_gf_pool = [b for b in gf_hr_pool.get(gf, [])                     if b not in (nf, gf)]
+    xf_birds   = [b for b in _parse_bird_list(row.get("XF Birds",               "")) if b not in (nf, gf)]
+    hr_nf_pool = [b for b in _parse_bird_list(row.get("HR Birds (Nest Father)",   "")) if b not in (nf, gf)]
+    hr_gf_pool = [b for b in _parse_bird_list(row.get("HR Birds (Genetic Father)","")) if b not in (nf, gf)]
 
     registry: dict = {}
 
@@ -213,6 +207,55 @@ def load_bird_registry(fm_dir: str, nest_father: str, genetic_father: str) -> di
     for b in hr_gf_pool: reg(b, "hr_genetic")
 
     return registry
+
+
+def load_audio_candidates(cfg: dict) -> dict:
+    """
+    Load audio candidates, preferring wseg-confirmed song files when available.
+
+    For birds that whisperseg has processed, only the files it classified as
+    song are returned.  For birds not yet processed, all candidates from the
+    regular cache are used as a fallback.
+
+    Controlled by two config keys:
+        ``audio_candidates_cache``  path to the full candidate cache (required)
+        ``wseg_song_cache``         path to wseg_song_cache.json (optional)
+    """
+    with open(cfg["audio_candidates_cache"]) as f:
+        candidates: dict = json.load(f)
+
+    wseg_path_str = cfg.get("wseg_song_cache")
+    if not wseg_path_str:
+        return candidates
+
+    wseg_path = Path(wseg_path_str)
+    if not wseg_path.exists():
+        print(f"  wseg_song_cache not found at {wseg_path} — using regular candidates for all birds")
+        return candidates
+
+    with open(wseg_path) as f:
+        wseg_cache: dict = json.load(f)
+
+    merged: dict = {}
+    n_wseg = n_fallback = 0
+    for bird, files in candidates.items():
+        wseg_files = wseg_cache.get(bird, [])
+        if wseg_files:
+            enriched = []
+            for fp in wseg_files:
+                try:
+                    size_mb = Path(fp).stat().st_size / 1e6
+                except OSError:
+                    size_mb = 0.0
+                enriched.append({"filepath": fp, "size_mb": size_mb})
+            merged[bird] = enriched
+            n_wseg += 1
+        else:
+            merged[bird] = files
+            n_fallback += 1
+
+    print(f"  wseg-confirmed songs: {n_wseg} birds  |  regular cache fallback: {n_fallback} birds")
+    return merged
 
 
 # ── Duration helper ──────────────────────────────────────────────────────────────
@@ -733,10 +776,9 @@ def main() -> None:
           "  ".join(f"{r}={n}" for r, n in role_counts.items() if n))
 
     # ── Load audio candidates ─────────────────────────────────────────────────
-    print("\nLoading audio candidates cache...")
-    with open(cfg["audio_candidates_cache"]) as f:
-        audio_candidates = json.load(f)
-    found = sum(1 for b in registry if b in audio_candidates)
+    print("\nLoading audio candidates...")
+    audio_candidates = load_audio_candidates(cfg)
+    found = sum(1 for b in registry if b in audio_candidates and audio_candidates[b])
     print(f"  {found}/{len(registry)} birds have audio candidates")
 
     # ── Load exclusion list ───────────────────────────────────────────────────

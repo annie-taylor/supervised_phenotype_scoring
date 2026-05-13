@@ -1,7 +1,8 @@
 {
   "project_dir":            "E:/scoring/",
-  "ref_dir":    "E:/scoring/refs/",
+  "ref_dir":                "E:/scoring/refs/",
   "audio_candidates_cache": "E:/scoring/refs/audio_candidates_cache.json",
+  "wseg_song_cache":        "C:/Users/Eric/Documents/annie/xfoster_bird_selection/file_management/wseg_song_cache.json",
   "output_dir":             "E:/scoring/batches",
 
   "traits": ["stereotypy", "repeat_propensity"],
